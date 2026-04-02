@@ -56,27 +56,32 @@ let currentTelemetry = {
   traffic: { rx: 0, tx: 0 },
   connectivity: false,
   bkwInterface: "Unknown",
+  health: 100,
   timestamp: new Date().toISOString()
 };
 
 const renderTerminalDashboard = () => {
-  const { signal, traffic, connectivity, bkwInterface, timestamp } = currentTelemetry;
+  const { signal, traffic, connectivity, bkwInterface, health, timestamp } = currentTelemetry;
   const statusColor = connectivity ? "\x1b[32m" : "\x1b[31m"; // Green or Red
   const reset = "\x1b[0m";
   const cyan = "\x1b[36m";
   const yellow = "\x1b[33m";
   const magenta = "\x1b[35m";
+  const bold = "\x1b[1m";
 
   const box = `
-  ${magenta}┌──────────────────────────────────────────────────────────────────────────────┐${reset}
-  ${magenta}│${reset} ${cyan}BROADCOM BCM4331 FORENSIC CONTROLLER v39.8${reset}                               ${magenta}│${reset}
-  ${magenta}├──────────────────────────────────────────────────────────────────────────────┤${reset}
-  ${magenta}│${reset} STATUS: ${statusColor}${connectivity ? "ONLINE " : "OFFLINE"}${reset} | BKW_IFACE: ${yellow}${bkwInterface.padEnd(10)}${reset} | SIGNAL: ${yellow}${String(signal).padStart(4)} dBm${reset}     ${magenta}│${reset}
-  ${magenta}├──────────────────────────────────────────────────────────────────────────────┤${reset}
-  ${magenta}│${reset} TRAFFIC: RX: ${cyan}${String(traffic.rx).padStart(12)}${reset} B | TX: ${cyan}${String(traffic.tx).padStart(12)}${reset} B               ${magenta}│${reset}
-  ${magenta}├──────────────────────────────────────────────────────────────────────────────┤${reset}
-  ${magenta}│${reset} TIMESTAMP: ${timestamp.padEnd(64)} ${magenta}│${reset}
-  ${magenta}└──────────────────────────────────────────────────────────────────────────────┘${reset}
+  ${magenta}╔══════════════════════════════════════════════════════════════════════════════╗${reset}
+  ${magenta}║${reset} ${bold}${cyan}BROADCOM BCM4331 FORENSIC CONTROLLER v39.8${reset}                               ${magenta}║${reset}
+  ${magenta}╠══════════════════════════════════════════════════════════════════════════════╣${reset}
+  ${magenta}║${reset} ${bold}STATUS:${reset} ${statusColor}${connectivity ? "ONLINE " : "OFFLINE"}${reset}  ${magenta}║${reset} ${bold}BKW_IFACE:${reset} ${yellow}${bkwInterface.padEnd(10)}${reset} ${magenta}║${reset} ${bold}HEALTH:${reset} ${yellow}${String(health).padStart(3)}/100${reset}     ${magenta}║${reset}
+  ${magenta}╠══════════════════════════════════════════════════════════════════════════════╣${reset}
+  ${magenta}║${reset} ${bold}SIGNAL:${reset} ${yellow}${String(signal).padStart(4)} dBm${reset}                                                   ${magenta}║${reset}
+  ${magenta}║${reset} ${bold}TRAFFIC:${reset}                                                                      ${magenta}║${reset}
+  ${magenta}║${reset}   RX: ${cyan}${String(traffic.rx).padStart(12)}${reset} B                                             ${magenta}║${reset}
+  ${magenta}║${reset}   TX: ${cyan}${String(traffic.tx).padStart(12)}${reset} B                                             ${magenta}║${reset}
+  ╠══════════════════════════════════════════════════════════════════════════════╣
+  ║ ${bold}TIMESTAMP:${reset} ${timestamp.padEnd(64)} ${magenta}║${reset}
+  ╚══════════════════════════════════════════════════════════════════════════════╝
   `;
   console.log(box);
 };
@@ -137,15 +142,14 @@ const rapidRepair = async () => {
     // Ensure scripts are executable
     execSync(`chmod +x "${localFixPath}" "${localSetupPath}"`);
 
-    if (!fs.existsSync("/usr/local/bin/fix-wifi")) {
-      logTee("⚠️  Fix script missing from system path. Attempting restoration via setup-system.sh...");
-      await runCommand(`PROJECT_ROOT="${WORKSPACE_DIR}" bash "${localSetupPath}"`);
-      logTee("✅ System setup recovery completed via rapidRepair.");
-    } else {
-      logTee("Executing health check: fix-wifi --check-only");
-      await runCommand(`sudo -n PROJECT_ROOT="${WORKSPACE_DIR}" "${FIX_SCRIPT}" --check-only --workspace "${WORKSPACE_DIR}"`);
-      logTee("✅ System health verified. Sudoers and dependencies are intact.");
-    }
+    // Always ensure the latest script is in the system path
+    logTee("Deploying latest recovery script to system path...");
+    await runCommand(`sudo -n cp "${localFixPath}" "${FIX_SCRIPT}"`);
+    await runCommand(`sudo -n chmod +x "${FIX_SCRIPT}"`);
+
+    logTee("Executing health check: fix-wifi --check-only");
+    await runCommand(`sudo -n PROJECT_ROOT="${WORKSPACE_DIR}" "${FIX_SCRIPT}" --check-only --workspace "${WORKSPACE_DIR}"`);
+    logTee("✅ System health verified. Sudoers and dependencies are intact.");
     
     // Start the continuous monitor after health check
     startMonitor();
@@ -342,13 +346,16 @@ async function startServer() {
       let traffic = { rx: 0, tx: 0 };
       let connectivity = false;
       let bkwInterface = "Unknown";
+      let health = 100;
       let latestMilestones: string[] = [];
 
       try {
-        // 1. BKW Interface from DB
+        // 1. BKW Interface and Health from DB
         if (fs.existsSync(DB_FILE)) {
           try {
             bkwInterface = execSync(`sqlite3 "${DB_FILE}" "SELECT value FROM config WHERE key='bkw_interface';"`, { timeout: 1000, encoding: 'utf8' }).trim() || "Unknown";
+            const healthStr = execSync(`sqlite3 "${DB_FILE}" "SELECT value FROM config WHERE key='health_score';"`, { timeout: 1000, encoding: 'utf8' }).trim();
+            if (healthStr) health = parseInt(healthStr);
             
             // Query for latest milestones
             const milestonesOutput = execSync(`sqlite3 -separator " | " "${DB_FILE}" "SELECT timestamp, name, details FROM milestones ORDER BY timestamp DESC LIMIT 5;"`, { timeout: 1000, encoding: 'utf8' });
@@ -403,6 +410,7 @@ async function startServer() {
         traffic,
         connectivity,
         bkwInterface,
+        health,
         timestamp: ts
       };
 

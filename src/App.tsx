@@ -33,6 +33,7 @@ interface StatusData {
   traffic: { rx: number; tx: number };
   connectivity: boolean;
   bkwInterface: string;
+  health: number;
   metricsHistory: { timestamp: string; signal: number; rx: number; tx: number }[];
   timestamp: string;
 }
@@ -190,8 +191,8 @@ export default function App() {
               <Wifi className="w-5 h-5 text-cyan-400" />
             </div>
             <div>
-              <h1 className="text-sm font-bold tracking-tight text-white uppercase">Broadcom BCM4331</h1>
-              <p className="text-[10px] text-slate-500 font-mono tracking-widest uppercase">Forensic Controller v39.8</p>
+              <h1 className="text-sm font-bold tracking-tight text-white uppercase">Broadcom BCM4331 Forensic Controller</h1>
+              <p className="text-[10px] text-slate-500 font-mono tracking-widest uppercase">v39.8 Unified Engine</p>
             </div>
           </div>
 
@@ -299,6 +300,38 @@ export default function App() {
                         <Area type="monotone" dataKey="signal" stroke="#06b6d4" fillOpacity={1} fill="url(#colorSignal)" />
                       </AreaChart>
                     </ResponsiveContainer>
+                  </div>
+                </div>
+
+                <div className="bg-white/5 border border-white/10 rounded-2xl p-6 relative overflow-hidden group">
+                  <div className="absolute top-0 right-0 w-32 h-32 bg-emerald-500/5 blur-3xl -mr-16 -mt-16 transition-all group-hover:bg-emerald-500/10" />
+                  <div className="flex items-center justify-between mb-4">
+                    <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">System Health</span>
+                    <ShieldCheck className="w-4 h-4 text-emerald-500" />
+                  </div>
+                  <div className="flex items-end gap-2">
+                    <span className={cn(
+                      "text-4xl font-bold tabular-nums",
+                      (status?.health || 0) > 80 ? "text-emerald-400" : (status?.health || 0) > 40 ? "text-amber-400" : "text-rose-400"
+                    )}>
+                      {status?.health || 0}
+                    </span>
+                    <span className="text-sm text-slate-500 mb-1 font-mono">/100</span>
+                  </div>
+                  <div className="mt-4 flex flex-col gap-2">
+                    <div className="w-full h-1.5 bg-white/5 rounded-full overflow-hidden">
+                      <motion.div 
+                        initial={{ width: 0 }}
+                        animate={{ width: `${status?.health || 0}%` }}
+                        className={cn(
+                          "h-full transition-all duration-1000",
+                          (status?.health || 0) > 80 ? "bg-emerald-500" : (status?.health || 0) > 40 ? "bg-amber-500" : "bg-rose-500"
+                        )}
+                      />
+                    </div>
+                    <p className="text-[9px] text-slate-500 uppercase tracking-wider font-bold">
+                      {status?.health === 100 ? "Optimal Performance" : status?.health && status.health > 50 ? "Minor Degradation" : "Critical Failure Detected"}
+                    </p>
                   </div>
                 </div>
 

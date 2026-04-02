@@ -143,6 +143,17 @@ init_db() {
 # Recording the PID in the mutex ensures we can identify which process 
 # owns the hardware lock if a recovery hangs.
 acquire_mutex() {
+  if [[ "$FORCE" -eq 1 ]]; then
+    log_and_tee "⚠️  FORCE mode enabled. Terminating existing forensic monitors..."
+    if [ -f "$MUTEX" ]; then
+      local pid=$(cat "$MUTEX")
+      if [[ "$pid" =~ ^[0-9]+$ ]] && kill -0 "$pid" 2>/dev/null; then
+        sudo kill -9 "$pid" || true
+      fi
+      rm -f "$MUTEX"
+    fi
+  fi
+
   if [ -f "$MUTEX" ] && kill -0 "$(cat "$MUTEX")" 2>/dev/null; then
     log_and_tee "⚠️  CONFLICT: Another recovery in progress (PID $(cat "$MUTEX"))."
     exit 0
@@ -250,9 +261,11 @@ calculate_health() {
     reason="${reason}No default route; "
   fi
   if [[ $score -lt 100 ]]; then
-    log_and_tee "⚠️  HEALTH_DEGRADED: Score $score/100 | Reasons: ${reason:-None}"
+    # Log to stderr to avoid polluting stdout which is used for the numeric return value
+    echo "⚠️  HEALTH_DEGRADED: Score $score/100 | Reasons: ${reason:-None}" >&2
   fi
   CACHED_HEALTH=$score
+  sqlite3 "$DB_FILE" "INSERT OR REPLACE INTO config (key, value) VALUES ('health_score', '$score');"
   echo "$score"
 }
 
@@ -261,8 +274,8 @@ calculate_health() {
 # -----------------------------------------------------------------------------
 PID_CONTROL() {
   load_pid_params
-  local current error D_error output
-  current=$(calculate_health)
+  local current=$1
+  local error D_error output
   error=$(( (100 - current) * SCALE ))
   
   # Simple low-pass filter on error
@@ -332,7 +345,11 @@ recover() {
   run_verbatim "sudo ip link set $INTERFACE up" "Manual link activation" || true
 
   log_and_tee "🔧 Re-syncing NetworkManager..."
-  run_verbatim "sudo nmcli networking on" "Enabling NM global networking"
+  # Force networking on if it's disabled
+  if nmcli networking | grep -q "disabled"; then
+    log_and_tee "⚠️  NetworkManager networking is disabled. Forcing on..."
+    run_verbatim "sudo nmcli networking on" "Enabling NM global networking"
+  fi
   run_verbatim "sudo nmcli device set $INTERFACE managed yes" "Enabling NM management"
   run_verbatim "sudo nmcli device connect $INTERFACE" "Triggering NM connection" || true
 
@@ -347,12 +364,13 @@ main_loop() {
   log_and_tee "🛰️  Broadcom Network Controller active. Monitoring health..."
   
   while true; do
-    CACHED_HEALTH=0
+    local health
+    health=$(calculate_health)
     local control
-    control=$(PID_CONTROL)
+    control=$(PID_CONTROL "$health")
     
-    log_and_tee "📈 PID SIGNAL: $control | Health: ${CACHED_HEALTH}/100"
-    sqlite3 "$DB_FILE" "INSERT INTO milestones (timestamp, name, details) VALUES ('$(date '+%Y-%m-%d %H:%M:%S')', 'HEARTBEAT', 'Signal: $control | Health: ${CACHED_HEALTH}/100');"
+    log_and_tee "📈 PID SIGNAL: $control | Health: ${health}/100"
+    sqlite3 "$DB_FILE" "INSERT INTO milestones (timestamp, name, details) VALUES ('$(date '+%Y-%m-%d %H:%M:%S')', 'HEARTBEAT', 'Signal: $control | Health: ${health}/100');"
 
     if (( control < HYSTERESIS_LOW )); then
       # Stable
@@ -411,7 +429,7 @@ log_and_tee "📦 Phase 1: Dependency Audit"
 sqlite3 "$DB_FILE" "INSERT INTO milestones (timestamp, name, details) VALUES ('$(date '+%Y-%m-%d %H:%M:%S')', 'PHASE_1', 'Starting dependency audit and environment check');"
 
 # Ensure all forensic tools are present
-local deps=(sqlite3 dnf rfkill modprobe iwconfig ethtool nmcli ip dmesg iw)
+deps=(sqlite3 dnf rfkill modprobe iwconfig ethtool nmcli ip dmesg iw)
 for dep in "${deps[@]}"; do
   if ! command -v "$dep" >/dev/null 2>&1; then
     log_and_tee "⚠️  Dependency missing: $dep. Attempting emergency installation..."
