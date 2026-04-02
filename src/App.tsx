@@ -172,6 +172,19 @@ export default function App() {
               {(status?.isFixing || isRefreshing) ? <RefreshCw className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
               Nuclear Recovery
             </button>
+            <button 
+              onClick={async () => {
+                try {
+                  await fetch('/api/test/fault', { method: 'POST' });
+                  await fetchStatus();
+                } catch (e) {
+                  console.error("Fault simulation failed", e);
+                }
+              }}
+              className="px-4 py-1.5 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 border border-rose-500/30 text-rose-400 text-[10px] font-bold uppercase tracking-wider transition-all"
+            >
+              Simulate Fault
+            </button>
           </div>
         </div>
       </header>

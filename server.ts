@@ -46,6 +46,7 @@ logTee(`FIX_SCRIPT_PATH: ${FIX_SCRIPT}`);
 app.use(express.json());
 
 let isFixing = false;
+let isSimulatingFault = false;
 let lastFixError: string | null = null;
 const metricsHistory: { timestamp: string; signal: number; rx: number; tx: number }[] = [];
 
@@ -56,6 +57,28 @@ let currentTelemetry = {
   connectivity: false,
   bkwInterface: "Unknown",
   timestamp: new Date().toISOString()
+};
+
+const renderTerminalDashboard = () => {
+  const { signal, traffic, connectivity, bkwInterface, timestamp } = currentTelemetry;
+  const statusColor = connectivity ? "\x1b[32m" : "\x1b[31m"; // Green or Red
+  const reset = "\x1b[0m";
+  const cyan = "\x1b[36m";
+  const yellow = "\x1b[33m";
+  const magenta = "\x1b[35m";
+
+  const box = `
+  ${magenta}┌──────────────────────────────────────────────────────────────────────────────┐${reset}
+  ${magenta}│${reset} ${cyan}BROADCOM BCM4331 FORENSIC CONTROLLER v39.8${reset}                               ${magenta}│${reset}
+  ${magenta}├──────────────────────────────────────────────────────────────────────────────┤${reset}
+  ${magenta}│${reset} STATUS: ${statusColor}${connectivity ? "ONLINE " : "OFFLINE"}${reset} | BKW_IFACE: ${yellow}${bkwInterface.padEnd(10)}${reset} | SIGNAL: ${yellow}${String(signal).padStart(4)} dBm${reset}     ${magenta}│${reset}
+  ${magenta}├──────────────────────────────────────────────────────────────────────────────┤${reset}
+  ${magenta}│${reset} TRAFFIC: RX: ${cyan}${String(traffic.rx).padStart(12)}${reset} B | TX: ${cyan}${String(traffic.tx).padStart(12)}${reset} B               ${magenta}│${reset}
+  ${magenta}├──────────────────────────────────────────────────────────────────────────────┤${reset}
+  ${magenta}│${reset} TIMESTAMP: ${timestamp.padEnd(64)} ${magenta}│${reset}
+  ${magenta}└──────────────────────────────────────────────────────────────────────────────┘${reset}
+  `;
+  console.log(box);
 };
 
 const runCommand = (cmd: string, env: Record<string, string> = {}): Promise<void> => {
@@ -171,6 +194,7 @@ app.post("/api/fix", async (req, res) => {
   }
 
   isFixing = true;
+  isSimulatingFault = false; // Reset simulation on fix
   lastFixError = null;
 
   res.json({ message: "Recovery initiated" });
@@ -189,7 +213,14 @@ app.post("/api/fix", async (req, res) => {
   }
 });
 
-// POINTS 15-16: SSE for real-time logs
+// POINT 15: API Routes - Test Fault
+app.post('/api/test/fault', (req, res) => {
+  isSimulatingFault = !isSimulatingFault;
+  logTee(`⚠️  FAULT SIMULATION: ${isSimulatingFault ? "ENABLED" : "DISABLED"}`);
+  res.json({ isSimulatingFault });
+});
+
+// POINTS 16-17: SSE for real-time logs
 app.get("/api/events", (req, res) => {
   logTee("SSE /api/events - Client connected for real-time telemetry");
   res.setHeader("Content-Type", "text/event-stream");
@@ -277,8 +308,14 @@ async function startServer() {
 
         // 4. Connectivity
         try {
-          execSync("ping -c 1 -W 1 8.8.8.8", { timeout: 1500 });
-          connectivity = true;
+          if (isSimulatingFault) {
+            connectivity = false;
+            signal = -99;
+            traffic = { rx: 0, tx: 0 };
+          } else {
+            execSync("ping -c 1 -W 1 8.8.8.8", { timeout: 1500 });
+            connectivity = true;
+          }
         } catch {
           connectivity = false;
         }
@@ -301,6 +338,7 @@ async function startServer() {
       if (metricsHistory.length > 50) metricsHistory.shift();
 
       logTee(`📡 Forensic Telemetry Snapshot [${ts}]: Signal=${signal}dBm, RX=${traffic.rx}B, TX=${traffic.tx}B, Connectivity=${connectivity ? "ONLINE" : "OFFLINE"}, BKW_IFACE=${bkwInterface}`);
+      renderTerminalDashboard();
     }, 10000); // Increased frequency to 10s for better responsiveness
   });
 }
