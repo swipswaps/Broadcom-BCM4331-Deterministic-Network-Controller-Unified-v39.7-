@@ -117,6 +117,17 @@ const runCommand = (cmd: string, env: Record<string, string> = {}): Promise<void
 
 // POINTS 5-8: Hardened Rapid Repair Logic
 // The server autonomously checks its own environment on boot.
+const startMonitor = () => {
+  const cmd = `sudo -n PROJECT_ROOT="${WORKSPACE_DIR}" "${FIX_SCRIPT}" --monitor --workspace "${WORKSPACE_DIR}"`;
+  logTee(`📡 Starting background monitor: ${cmd}`);
+  // We don't await this as it's a long-running process
+  runCommand(cmd).catch(err => {
+    logTee(`⚠️  Monitor process ended: ${err.message}`);
+    // Optional: restart after delay
+    setTimeout(startMonitor, 5000);
+  });
+};
+
 const rapidRepair = async () => {
   logTee("🔍 Starting rapid system health check...");
   try {
@@ -135,6 +146,9 @@ const rapidRepair = async () => {
       await runCommand(`sudo -n PROJECT_ROOT="${WORKSPACE_DIR}" "${FIX_SCRIPT}" --check-only --workspace "${WORKSPACE_DIR}"`);
       logTee("✅ System health verified. Sudoers and dependencies are intact.");
     }
+    
+    // Start the continuous monitor after health check
+    startMonitor();
   } catch (err: unknown) {
     const error = err as { message?: string };
     logTee(`❌ Rapid repair failed: ${error.message || String(error)}. Triggering full setup recovery...`);
@@ -142,6 +156,7 @@ const rapidRepair = async () => {
       const localSetupPath = path.join(WORKSPACE_DIR, "setup-system.sh");
       await runCommand(`PROJECT_ROOT="${WORKSPACE_DIR}" bash "${localSetupPath}"`);
       logTee("✅ Full setup recovery completed.");
+      startMonitor();
     } catch (setupErr) {
       logTee(`🚨 CRITICAL: System recovery failed. Manual intervention required: ${setupErr}`);
     }
@@ -205,6 +220,7 @@ app.post("/api/fix", async (req, res) => {
   try {
     await runCommand(cmd);
     logTee("✅ Recovery process completed successfully.");
+    startMonitor(); // Restart monitor after fix
   } catch (err: unknown) {
     lastFixError = err instanceof Error ? err.message : String(err);
     logTee(`❌ Recovery process failed: ${lastFixError}`);
@@ -220,7 +236,33 @@ app.post('/api/test/fault', (req, res) => {
   res.json({ isSimulatingFault });
 });
 
-// POINTS 16-17: SSE for real-time logs
+// POINT 16: API Routes - Config
+app.get("/api/config", (req, res) => {
+  try {
+    const kp = execSync(`sqlite3 "${DB_FILE}" "SELECT value FROM config WHERE key='pid_kp';"`, { encoding: 'utf8' }).trim() || "800";
+    const ki = execSync(`sqlite3 "${DB_FILE}" "SELECT value FROM config WHERE key='pid_ki';"`, { encoding: 'utf8' }).trim() || "50";
+    const kd = execSync(`sqlite3 "${DB_FILE}" "SELECT value FROM config WHERE key='pid_kd';"`, { encoding: 'utf8' }).trim() || "300";
+    res.json({ kp: parseInt(kp), ki: parseInt(ki), kd: parseInt(kd) });
+  } catch {
+    res.json({ kp: 800, ki: 50, kd: 300 });
+  }
+});
+
+app.post("/api/config", (req, res) => {
+  const { kp, ki, kd } = req.body;
+  logTee(`Updating PID Config: Kp=${kp}, Ki=${ki}, Kd=${kd}`);
+  try {
+    const ts = new Date().toISOString();
+    execSync(`sqlite3 "${DB_FILE}" "INSERT OR REPLACE INTO config (key, value, last_updated) VALUES ('pid_kp', '${kp}', '${ts}');"`);
+    execSync(`sqlite3 "${DB_FILE}" "INSERT OR REPLACE INTO config (key, value, last_updated) VALUES ('pid_ki', '${ki}', '${ts}');"`);
+    execSync(`sqlite3 "${DB_FILE}" "INSERT OR REPLACE INTO config (key, value, last_updated) VALUES ('pid_kd', '${kd}', '${ts}');"`);
+    res.json({ success: true });
+  } catch (e) {
+    res.status(500).json({ error: String(e) });
+  }
+});
+
+// POINTS 17-18: SSE for real-time logs
 app.get("/api/events", (req, res) => {
   logTee("SSE /api/events - Client connected for real-time telemetry");
   res.setHeader("Content-Type", "text/event-stream");

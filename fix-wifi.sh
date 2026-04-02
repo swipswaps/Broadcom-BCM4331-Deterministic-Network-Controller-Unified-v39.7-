@@ -17,12 +17,14 @@ CHECK_ONLY=0
 # We allow PROJECT_ROOT to be set via environment OR --workspace argument.
 PROJECT_ROOT="${PROJECT_ROOT:-}"
 
+MONITOR=0
 # Parse arguments first to capture --workspace before any validation.
 TEMP_ARGS=("$@")
 while [[ $# -gt 0 ]]; do
   case $1 in
     --force) FORCE=1; shift ;;
     --check-only) CHECK_ONLY=1; shift ;;
+    --monitor) MONITOR=1; shift ;;
     --workspace) PROJECT_ROOT="$2"; shift 2 ;;
     *) shift ;;
   esac
@@ -197,6 +199,176 @@ run_verbatim() {
   return $exit_code
 }
 
+# -----------------------------------------------------------------------------
+# PID CONTROLLER CONFIGURATION
+# -----------------------------------------------------------------------------
+SCALE=1000
+Kp=800
+Ki=50
+Kd=300
+prev_error=0
+I_error=0
+I_CLAMP=50000
+DEADBAND=5
+HYSTERESIS_HIGH=60
+HYSTERESIS_LOW=40
+MAX_OUTPUT=1000
+MIN_OUTPUT=-1000
+
+# Load PID parameters from DB if they exist
+load_pid_params() {
+  local db_kp=$(sqlite3 "$DB_FILE" "SELECT value FROM config WHERE key='pid_kp';" 2>/dev/null || true)
+  local db_ki=$(sqlite3 "$DB_FILE" "SELECT value FROM config WHERE key='pid_ki';" 2>/dev/null || true)
+  local db_kd=$(sqlite3 "$DB_FILE" "SELECT value FROM config WHERE key='pid_kd';" 2>/dev/null || true)
+  
+  [[ -n "$db_kp" ]] && Kp=$db_kp
+  [[ -n "$db_ki" ]] && Ki=$db_ki
+  [[ -n "$db_kd" ]] && Kd=$db_kd
+}
+
+# -----------------------------------------------------------------------------
+# NETWORK HEALTH SENSOR
+# -----------------------------------------------------------------------------
+CACHED_HEALTH=0
+
+calculate_health() {
+  local score=0
+  local reason=""
+  if ping -c 3 -W 2 8.8.8.8 >/dev/null 2>&1; then
+    score=$((score + 40))
+  else
+    reason="${reason}Ping failed; "
+  fi
+  if getent hosts google.com >/dev/null 2>&1; then
+    score=$((score + 30))
+  else
+    reason="${reason}DNS failed; "
+  fi
+  if ip route | grep -q "^default"; then
+    score=$((score + 30))
+  else
+    reason="${reason}No default route; "
+  fi
+  if [[ $score -lt 100 ]]; then
+    log_and_tee "⚠️  HEALTH_DEGRADED: Score $score/100 | Reasons: ${reason:-None}"
+  fi
+  CACHED_HEALTH=$score
+  echo "$score"
+}
+
+# -----------------------------------------------------------------------------
+# PID CONTROL LOGIC
+# -----------------------------------------------------------------------------
+PID_CONTROL() {
+  load_pid_params
+  local current error D_error output
+  current=$(calculate_health)
+  error=$(( (100 - current) * SCALE ))
+  
+  # Simple low-pass filter on error
+  error=$(( (prev_error * 700 + error * 300) / 1000 ))
+  
+  local abs_error=${error#-}
+  if (( abs_error < DEADBAND * SCALE )); then
+    prev_error=$error
+    echo 0
+    return
+  fi
+  
+  D_error=$((error - prev_error))
+  local tentative_I=$((I_error + error))
+  
+  local raw_output=$(( (Kp * error + Ki * tentative_I + Kd * D_error) / SCALE ))
+  local saturated=0
+  
+  if (( raw_output > MAX_OUTPUT )); then
+    output=$MAX_OUTPUT; saturated=1
+  elif (( raw_output < MIN_OUTPUT )); then
+    output=$MIN_OUTPUT; saturated=1
+  else
+    output=$raw_output
+  fi
+  
+  if (( saturated == 0 )); then
+    I_error=$tentative_I
+    if (( I_error > I_CLAMP * SCALE )); then I_error=$((I_CLAMP * SCALE)); fi
+    if (( I_error < -I_CLAMP * SCALE )); then I_error=$((-I_CLAMP * SCALE)); fi
+  fi
+  
+  prev_error=$error
+  echo "$output"
+}
+
+# -----------------------------------------------------------------------------
+# RECOVERY SEQUENCE
+# -----------------------------------------------------------------------------
+recover() {
+  local current_health
+  current_health=$(calculate_health)
+  if [[ "$current_health" -eq 100 ]]; then
+    log_and_tee "✅ RECOVERY_SKIPPED: System health is already 100/100."
+    return 0
+  fi
+
+  log_and_tee "🚀 RECOVERY_SEQUENCE_START: Current Health: $current_health/100"
+  
+  # Phase 2 logic (Hardware Handshake)
+  detect_interface
+  save_bkw "bkw_interface" "$INTERFACE"
+
+  log_and_tee "🔧 Resetting kernel module state..."
+  run_verbatim "sudo modprobe -r b43 bcma wl brcmsmac" "Unloading conflicting modules" || true
+
+  log_and_tee "🔧 Loading deterministic module (wl)..."
+  if ! run_verbatim "sudo modprobe wl" "Loading Broadcom-STA module"; then
+    log_and_tee "⚠️  'wl' module failed. Attempting 'b43' fallback..."
+    run_verbatim "sudo modprobe b43" "Loading b43 module"
+  fi
+
+  log_and_tee "🔧 Unblocking radio via rfkill..."
+  run_verbatim "sudo rfkill unblock all" "RFKill global unblock"
+
+  log_and_tee "🔧 Forcing interface up..."
+  run_verbatim "sudo ip link set $INTERFACE up" "Manual link activation" || true
+
+  log_and_tee "🔧 Re-syncing NetworkManager..."
+  run_verbatim "sudo nmcli networking on" "Enabling NM global networking"
+  run_verbatim "sudo nmcli device set $INTERFACE managed yes" "Enabling NM management"
+  run_verbatim "sudo nmcli device connect $INTERFACE" "Triggering NM connection" || true
+
+  touch "${PROJECT_ROOT}/recovery_complete.flag"
+  log_and_tee "✅ Recovery sequence complete."
+}
+
+# -----------------------------------------------------------------------------
+# MAIN MONITORING LOOP
+# -----------------------------------------------------------------------------
+main_loop() {
+  log_and_tee "🛰️  Broadcom Network Controller active. Monitoring health..."
+  
+  while true; do
+    CACHED_HEALTH=0
+    local control
+    control=$(PID_CONTROL)
+    
+    log_and_tee "📈 PID SIGNAL: $control | Health: ${CACHED_HEALTH}/100"
+    sqlite3 "$DB_FILE" "INSERT INTO milestones (timestamp, name, details) VALUES ('$(date '+%Y-%m-%d %H:%M:%S')', 'HEARTBEAT', 'Signal: $control | Health: ${CACHED_HEALTH}/100');"
+
+    if (( control < HYSTERESIS_LOW )); then
+      # Stable
+      :
+    elif (( control < HYSTERESIS_HIGH )); then
+      log_and_tee "⚠️  STATUS: Degrading. Triggering soft network toggle..."
+      run_verbatim "sudo nmcli networking off && sleep 1 && sudo nmcli networking on" "Soft Reset"
+    else
+      log_and_tee "🚨 STATUS: Critical failure. Triggering full recovery engine..."
+      recover
+    fi
+    
+    sleep 10
+  done
+}
+
 # ====================== EXECUTION SEQUENCE ======================
 
 # POINT 1: Absolute path resolution for the log file.
@@ -226,6 +398,11 @@ self_lint
 if [[ $CHECK_ONLY -eq 1 ]]; then
   log_and_tee "✅ Check-only mode passed. System is integrated and healthy."
   release_mutex
+  exit 0
+fi
+
+if [[ $MONITOR -eq 1 ]]; then
+  main_loop
   exit 0
 fi
 

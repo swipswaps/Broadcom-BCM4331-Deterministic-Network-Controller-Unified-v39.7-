@@ -7,7 +7,9 @@ import {
   Database, 
   RefreshCw,
   CheckCircle2,
-  XCircle
+  XCircle,
+  Settings2,
+  Save
 } from 'lucide-react';
 import { 
   LineChart, 
@@ -42,12 +44,20 @@ interface AuditData {
   message: string;
 }
 
+interface ConfigData {
+  kp: number;
+  ki: number;
+  kd: number;
+}
+
 export default function App() {
   const [status, setStatus] = useState<StatusData | null>(null);
   const [audit, setAudit] = useState<AuditData | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<'dashboard' | 'logs' | 'forensics'>('dashboard');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'logs' | 'forensics' | 'tuning'>('dashboard');
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [config, setConfig] = useState<ConfigData>({ kp: 800, ki: 50, kd: 300 });
+  const [isSavingConfig, setIsSavingConfig] = useState(false);
   const logEndRef = useRef<HTMLDivElement>(null);
 
   const fetchStatus = async () => {
@@ -82,6 +92,36 @@ export default function App() {
     }
   };
 
+  const fetchConfig = async () => {
+    try {
+      const res = await fetch('/api/config');
+      const data = await res.json();
+      setConfig(data);
+    } catch (e) {
+      console.error("Failed to fetch config", e);
+    }
+  };
+
+  const saveConfig = async () => {
+    setIsSavingConfig(true);
+    try {
+      const res = await fetch('/api/config', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(config)
+      });
+      if (res.ok) {
+        setError(null);
+      } else {
+        setError("Failed to save PID configuration");
+      }
+    } catch {
+      setError("Network error while saving config");
+    } finally {
+      setIsSavingConfig(false);
+    }
+  };
+
   const handleFix = async () => {
     setIsRefreshing(true);
     try {
@@ -97,6 +137,7 @@ export default function App() {
   useEffect(() => {
     fetchStatus();
     fetchAudit();
+    fetchConfig();
     const interval = setInterval(fetchStatus, 5000);
     
     const eventSource = new EventSource('/api/events');
@@ -115,8 +156,8 @@ export default function App() {
             return { ...prev, verbatimLogSnippet: data.content };
           });
         }
-      } catch (e) {
-        console.error("SSE JSON parse error:", e, "Data:", event.data);
+      } catch {
+        console.error("SSE JSON parse error: Data:", event.data);
       }
     };
 
@@ -208,11 +249,12 @@ export default function App() {
           {[
             { id: 'dashboard', icon: Activity, label: 'Telemetry' },
             { id: 'logs', icon: Terminal, label: 'Verbatim Logs' },
-            { id: 'forensics', icon: Database, label: 'Evidence' }
+            { id: 'forensics', icon: Database, label: 'Evidence' },
+            { id: 'tuning', icon: Settings2, label: 'Tuning' }
           ].map((tab) => (
             <button
               key={tab.id}
-              onClick={() => setActiveTab(tab.id as 'dashboard' | 'logs' | 'forensics')}
+              onClick={() => setActiveTab(tab.id as 'dashboard' | 'logs' | 'forensics' | 'tuning')}
               className={cn(
                 "flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-bold uppercase tracking-wider transition-all",
                 activeTab === tab.id ? "bg-cyan-500 text-black shadow-lg" : "text-slate-400 hover:bg-white/5"
@@ -404,6 +446,71 @@ export default function App() {
                     })}
                   </tbody>
                 </table>
+              </div>
+            </motion.div>
+          )}
+
+          {activeTab === 'tuning' && (
+            <motion.div 
+              key="tuning"
+              initial={{ opacity: 0, scale: 0.98 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.98 }}
+              className="max-w-2xl mx-auto"
+            >
+              <div className="bg-white/5 border border-white/10 rounded-2xl p-8 shadow-2xl">
+                <div className="flex items-center justify-between mb-8">
+                  <div>
+                    <h2 className="text-xl font-bold text-white flex items-center gap-3">
+                      <Settings2 className="w-6 h-6 text-cyan-500" />
+                      PID Controller Tuning
+                    </h2>
+                    <p className="text-xs text-slate-500 mt-1">Adjust real-time response characteristics of the recovery engine.</p>
+                  </div>
+                  <button
+                    onClick={saveConfig}
+                    disabled={isSavingConfig}
+                    className="flex items-center gap-2 px-6 py-2.5 rounded-xl bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 text-black text-xs font-bold uppercase tracking-widest transition-all shadow-[0_0_20px_rgba(6,182,212,0.4)]"
+                  >
+                    {isSavingConfig ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                    Apply & Save
+                  </button>
+                </div>
+
+                <div className="space-y-10">
+                  {[
+                    { id: 'kp', label: 'Proportional (Kp)', desc: 'Aggression of the initial response to health degradation.', min: 0, max: 2000, step: 10 },
+                    { id: 'ki', label: 'Integral (Ki)', desc: 'Steady-state error correction. Accumulates over time.', min: 0, max: 500, step: 5 },
+                    { id: 'kd', label: 'Derivative (Kd)', desc: 'Damping factor to prevent overshoot and oscillation.', min: 0, max: 1000, step: 10 }
+                  ].map((param) => (
+                    <div key={param.id} className="space-y-4">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <label className="text-sm font-bold text-slate-200">{param.label}</label>
+                          <p className="text-[10px] text-slate-500">{param.desc}</p>
+                        </div>
+                        <span className="px-3 py-1 rounded-lg bg-black/40 border border-white/10 font-mono text-cyan-400 text-sm font-bold">
+                          {config[param.id as keyof ConfigData]}
+                        </span>
+                      </div>
+                      <input 
+                        type="range"
+                        min={param.min}
+                        max={param.max}
+                        step={param.step}
+                        value={config[param.id as keyof ConfigData]}
+                        onChange={(e) => setConfig(prev => ({ ...prev, [param.id]: parseInt(e.target.value) }))}
+                        className="w-full h-1.5 bg-white/10 rounded-lg appearance-none cursor-pointer accent-cyan-500"
+                      />
+                    </div>
+                  ))}
+                </div>
+
+                <div className="mt-10 p-4 rounded-xl bg-cyan-500/5 border border-cyan-500/10">
+                  <p className="text-[10px] text-cyan-400/70 leading-relaxed italic">
+                    Note: Changes are applied to the forensic engine in real-time. The engine reads these values from the recovery database at the start of each PID loop iteration.
+                  </p>
+                </div>
               </div>
             </motion.div>
           )}
