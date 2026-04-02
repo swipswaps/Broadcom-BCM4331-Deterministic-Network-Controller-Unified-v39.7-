@@ -105,7 +105,15 @@ export default function App() {
         if (!event.data) return;
         const data = JSON.parse(event.data) as { type: string; content: string };
         if (data.type === 'log') {
-          setAudit(prev => prev ? { ...prev, verbatimLogSnippet: data.content } : null);
+          setAudit(prev => {
+            if (!prev) return { 
+              status: 'READY', 
+              verbatimLogSnippet: data.content, 
+              dbMilestones: '', 
+              message: 'Streaming logs...' 
+            };
+            return { ...prev, verbatimLogSnippet: data.content };
+          });
         }
       } catch (e) {
         console.error("SSE JSON parse error:", e, "Data:", event.data);

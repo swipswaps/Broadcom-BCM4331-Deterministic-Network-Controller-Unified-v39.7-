@@ -49,6 +49,15 @@ let isFixing = false;
 let lastFixError: string | null = null;
 const metricsHistory: { timestamp: string; signal: number; rx: number; tx: number }[] = [];
 
+// Shared telemetry state
+let currentTelemetry = {
+  signal: 0,
+  traffic: { rx: 0, tx: 0 },
+  connectivity: false,
+  bkwInterface: "Unknown",
+  timestamp: new Date().toISOString()
+};
+
 const runCommand = (cmd: string, env: Record<string, string> = {}): Promise<void> => {
   return new Promise((resolve, reject) => {
     // Use shell: true to handle sudo and environment variables in the command string
@@ -118,60 +127,12 @@ const rapidRepair = async () => {
 
 // POINT 9: API Routes - Status
 app.get("/api/status", async (req, res) => {
-  let signal = 0;
-  let traffic = { rx: 0, tx: 0 };
-  let connectivity = false;
-  let bkwInterface = "Unknown";
-
-  try {
-    // Retrieve BKW interface from database
-    try {
-      if (fs.existsSync(DB_FILE)) {
-        bkwInterface = execSync(`sqlite3 "${DB_FILE}" "SELECT value FROM config WHERE key='bkw_interface';"`, { timeout: 1000, encoding: 'utf8' }).trim() || "Unknown";
-      }
-    } catch (dbErr) {
-      console.warn(`Failed to retrieve BKW interface from DB: ${dbErr}`);
-    }
-
-    // Use timeouts to prevent hanging the server if system commands stall
-    const iwOutput = execSync("iw dev | grep Interface | awk '{print $2}' | xargs -I {} iw dev {} link", { timeout: 2000, encoding: 'utf8' }).toString();
-    const signalMatch = iwOutput.match(/signal:\s+(-?\d+)\s+dBm/);
-    if (signalMatch) signal = parseInt(signalMatch[1]);
-
-    // Handle grep failure gracefully (it returns exit code 1 if no matches found)
-    const statsOutput = execSync("cat /proc/net/dev | grep -E 'wl|wlan' || true", { timeout: 1000, encoding: 'utf8' }).toString();
-    if (statsOutput.trim()) {
-      const stats = statsOutput.trim().split(/\s+/);
-      if (stats.length > 10) {
-        traffic = { rx: parseInt(stats[1]), tx: parseInt(stats[9]) };
-      }
-    }
-
-    try {
-      execSync("ping -c 1 -W 1 8.8.8.8", { timeout: 1500 });
-      connectivity = true;
-    } catch {
-      connectivity = false;
-    }
-  } catch (err) {
-    // Log but don't crash; partial data is better than an error page
-    console.warn(`Status fetch partial failure: ${err}`);
-  }
-
-  const timestamp = new Date().toLocaleTimeString();
-  metricsHistory.push({ timestamp, signal, ...traffic });
-  if (metricsHistory.length > 50) metricsHistory.shift();
-
   res.setHeader('Content-Type', 'application/json');
   res.json({
     isFixing,
     lastFixError,
-    signal,
-    traffic,
-    connectivity,
-    bkwInterface,
-    metricsHistory,
-    timestamp: new Date().toISOString()
+    ...currentTelemetry,
+    metricsHistory
   });
 });
 
@@ -274,7 +235,7 @@ async function startServer() {
     logTee(`📡 Broadcom Control Center listening on http://localhost:${PORT}`);
     rapidRepair();
     
-    // Heartbeat and Telemetry logging
+    // Heartbeat and Telemetry background loop
     setInterval(async () => {
       const ts = new Date().toISOString();
       let signal = 0;
@@ -283,19 +244,38 @@ async function startServer() {
       let bkwInterface = "Unknown";
 
       try {
+        // 1. BKW Interface from DB
         if (fs.existsSync(DB_FILE)) {
-          bkwInterface = execSync(`sqlite3 "${DB_FILE}" "SELECT value FROM config WHERE key='bkw_interface';"`, { timeout: 1000, encoding: 'utf8' }).trim() || "Unknown";
-        }
-        const iwOutput = execSync("iw dev | grep Interface | awk '{print $2}' | xargs -I {} iw dev {} link", { timeout: 2000, encoding: 'utf8' }).toString();
-        const signalMatch = iwOutput.match(/signal:\s+(-?\d+)\s+dBm/);
-        if (signalMatch) signal = parseInt(signalMatch[1]);
-        const statsOutput = execSync("cat /proc/net/dev | grep -E 'wl|wlan' || true", { timeout: 1000, encoding: 'utf8' }).toString();
-        if (statsOutput.trim()) {
-          const stats = statsOutput.trim().split(/\s+/);
-          if (stats.length > 10) {
-            traffic = { rx: parseInt(stats[1]), tx: parseInt(stats[9]) };
+          try {
+            bkwInterface = execSync(`sqlite3 "${DB_FILE}" "SELECT value FROM config WHERE key='bkw_interface';"`, { timeout: 1000, encoding: 'utf8' }).trim() || "Unknown";
+          } catch {
+            // Silent fail for background
           }
         }
+
+        // 2. Signal Strength
+        try {
+          const iwOutput = execSync("iw dev | grep Interface | awk '{print $2}' | xargs -I {} iw dev {} link", { timeout: 2000, encoding: 'utf8' }).toString();
+          const signalMatch = iwOutput.match(/signal:\s+(-?\d+)\s+dBm/);
+          if (signalMatch) signal = parseInt(signalMatch[1]);
+        } catch {
+          // Silent fail
+        }
+
+        // 3. Traffic Stats
+        try {
+          const statsOutput = execSync("cat /proc/net/dev | grep -E 'wl|wlan' || true", { timeout: 1000, encoding: 'utf8' }).toString();
+          if (statsOutput.trim()) {
+            const stats = statsOutput.trim().split(/\s+/);
+            if (stats.length > 10) {
+              traffic = { rx: parseInt(stats[1]), tx: parseInt(stats[9]) };
+            }
+          }
+        } catch {
+          // Silent fail
+        }
+
+        // 4. Connectivity
         try {
           execSync("ping -c 1 -W 1 8.8.8.8", { timeout: 1500 });
           connectivity = true;
@@ -303,11 +283,25 @@ async function startServer() {
           connectivity = false;
         }
       } catch {
-        // Silent fail for background telemetry
+        // Global catch for the loop
       }
 
+      // Update shared state
+      currentTelemetry = {
+        signal,
+        traffic,
+        connectivity,
+        bkwInterface,
+        timestamp: ts
+      };
+
+      // Update history
+      const timeStr = new Date().toLocaleTimeString();
+      metricsHistory.push({ timestamp: timeStr, signal, ...traffic });
+      if (metricsHistory.length > 50) metricsHistory.shift();
+
       logTee(`📡 Forensic Telemetry Snapshot [${ts}]: Signal=${signal}dBm, RX=${traffic.rx}B, TX=${traffic.tx}B, Connectivity=${connectivity ? "ONLINE" : "OFFLINE"}, BKW_IFACE=${bkwInterface}`);
-    }, 30000);
+    }, 10000); // Increased frequency to 10s for better responsiveness
   });
 }
 
