@@ -11,7 +11,8 @@ LOG_FILE="${PROJECT_ROOT}/verbatim_handshake.log"
 echo "${LOG_FILE}"
 
 # Redirect all output to the log file while also displaying in terminal
-exec > >(tee -a "$LOG_FILE") 2>&1
+# We use a simple redirection here; log_and_tee will handle the terminal display.
+exec >> "$LOG_FILE" 2>&1
 
 log_and_tee() { echo -e "\033[1;36m[$(date '+%H:%M:%S')]\033[0m $1" | tee -a "$LOG_FILE"; }
 

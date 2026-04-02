@@ -1,6 +1,6 @@
 import express from "express";
 import { createServer as createViteServer } from "vite";
-import { exec, execSync } from "child_process";
+import { execSync, spawn } from "child_process";
 import fs from "fs";
 import path from "path";
 
@@ -49,11 +49,36 @@ let isFixing = false;
 let lastFixError: string | null = null;
 const metricsHistory: { timestamp: string; signal: number; rx: number; tx: number }[] = [];
 
-const execAsync = (cmd: string, timeout = 30000) => {
-  return new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
-    exec(cmd, { timeout }, (error, stdout, stderr) => {
-      if (error) reject(error);
-      else resolve({ stdout, stderr });
+const runCommand = (cmd: string, env: Record<string, string> = {}): Promise<void> => {
+  return new Promise((resolve, reject) => {
+    // Use shell: true to handle sudo and environment variables in the command string
+    const child = spawn(cmd, [], { 
+      env: { ...process.env, ...env }, 
+      shell: true,
+      stdio: ['inherit', 'pipe', 'pipe'] 
+    });
+
+    child.stdout?.on('data', (data) => {
+      data.toString().split('\n').forEach((line: string) => {
+        if (line.trim()) {
+          // We only console.log here because the script itself (fix-wifi.sh) 
+          // is already teeing its output to the LOG_FILE.
+          console.log(`[STDOUT] ${line}`);
+        }
+      });
+    });
+
+    child.stderr?.on('data', (data) => {
+      data.toString().split('\n').forEach((line: string) => {
+        if (line.trim()) {
+          console.error(`[STDERR] ${line}`);
+        }
+      });
+    });
+
+    child.on('close', (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`Command failed with code ${code}`));
     });
   });
 };
@@ -67,38 +92,29 @@ const rapidRepair = async () => {
     const localFixPath = path.join(WORKSPACE_DIR, "fix-wifi.sh");
 
     // Ensure scripts are executable
-    await execAsync(`chmod +x "${localFixPath}" "${localSetupPath}"`);
+    execSync(`chmod +x "${localFixPath}" "${localSetupPath}"`);
 
     if (!fs.existsSync("/usr/local/bin/fix-wifi")) {
       logTee("⚠️  Fix script missing from system path. Attempting restoration via setup-system.sh...");
-      const { stdout, stderr } = await execAsync(`PROJECT_ROOT="${WORKSPACE_DIR}" bash "${localSetupPath}"`);
-      if (stdout) logTee(`[SETUP STDOUT]\n${stdout}`);
-      if (stderr) logTee(`[SETUP STDERR]\n${stderr}`);
+      await runCommand(`PROJECT_ROOT="${WORKSPACE_DIR}" bash "${localSetupPath}"`);
       logTee("✅ System setup recovery completed via rapidRepair.");
     } else {
       logTee("Executing health check: fix-wifi --check-only");
-      const { stdout, stderr } = await execAsync(`sudo -n PROJECT_ROOT="${WORKSPACE_DIR}" "${FIX_SCRIPT}" --check-only --workspace "${WORKSPACE_DIR}"`);
-      if (stdout) logTee(`[HEALTH-CHECK STDOUT]\n${stdout}`);
-      if (stderr) logTee(`[HEALTH-CHECK STDERR]\n${stderr}`);
+      await runCommand(`sudo -n PROJECT_ROOT="${WORKSPACE_DIR}" "${FIX_SCRIPT}" --check-only --workspace "${WORKSPACE_DIR}"`);
       logTee("✅ System health verified. Sudoers and dependencies are intact.");
     }
   } catch (err: unknown) {
-    const error = err as { message?: string; stdout?: string; stderr?: string };
+    const error = err as { message?: string };
     logTee(`❌ Rapid repair failed: ${error.message || String(error)}. Triggering full setup recovery...`);
-    if (error.stdout) logTee(`[FAILED-CHECK STDOUT]\n${error.stdout}`);
-    if (error.stderr) logTee(`[FAILED-CHECK STDERR]\n${error.stderr}`);
     try {
       const localSetupPath = path.join(WORKSPACE_DIR, "setup-system.sh");
-      const { stdout } = await execAsync(`PROJECT_ROOT="${WORKSPACE_DIR}" bash "${localSetupPath}"`);
-      if (stdout) logTee(`[RECOVERY STDOUT]\n${stdout}`);
+      await runCommand(`PROJECT_ROOT="${WORKSPACE_DIR}" bash "${localSetupPath}"`);
       logTee("✅ Full setup recovery completed.");
     } catch (setupErr) {
       logTee(`🚨 CRITICAL: System recovery failed. Manual intervention required: ${setupErr}`);
     }
   }
 };
-
-let statusLogCounter = 0;
 
 // POINT 9: API Routes - Status
 app.get("/api/status", async (req, res) => {
@@ -137,21 +153,14 @@ app.get("/api/status", async (req, res) => {
     } catch {
       connectivity = false;
     }
-  } catch (e) {
+  } catch (err) {
     // Log but don't crash; partial data is better than an error page
-    console.warn(`Status fetch partial failure: ${e}`);
+    console.warn(`Status fetch partial failure: ${err}`);
   }
 
   const timestamp = new Date().toLocaleTimeString();
   metricsHistory.push({ timestamp, signal, ...traffic });
   if (metricsHistory.length > 50) metricsHistory.shift();
-
-  // Periodic verbose telemetry logging for transparency
-  statusLogCounter++;
-  if (statusLogCounter >= 6) {
-    statusLogCounter = 0;
-    logTee(`📡 Forensic Telemetry Snapshot: Signal=${signal}dBm, RX=${traffic.rx}B, TX=${traffic.tx}B, Connectivity=${connectivity ? "ONLINE" : "OFFLINE"}, BKW_IFACE=${bkwInterface}`);
-  }
 
   res.setHeader('Content-Type', 'application/json');
   res.json({
@@ -209,7 +218,7 @@ app.post("/api/fix", async (req, res) => {
   logTee(`🚀 Spawning recovery process: ${cmd}`);
 
   try {
-    await execAsync(cmd);
+    await runCommand(cmd);
     logTee("✅ Recovery process completed successfully.");
   } catch (err: unknown) {
     lastFixError = err instanceof Error ? err.message : String(err);
@@ -265,11 +274,40 @@ async function startServer() {
     logTee(`📡 Broadcom Control Center listening on http://localhost:${PORT}`);
     rapidRepair();
     
-    // Heartbeat to prevent "stalled" appearance in telemetry logs
-    setInterval(() => {
+    // Heartbeat and Telemetry logging
+    setInterval(async () => {
       const ts = new Date().toISOString();
-      logTee(`💓 Forensic Heartbeat [${ts}]: Monitoring active. PCI Bus & NM state verified.`);
-    }, 60000);
+      let signal = 0;
+      let traffic = { rx: 0, tx: 0 };
+      let connectivity = false;
+      let bkwInterface = "Unknown";
+
+      try {
+        if (fs.existsSync(DB_FILE)) {
+          bkwInterface = execSync(`sqlite3 "${DB_FILE}" "SELECT value FROM config WHERE key='bkw_interface';"`, { timeout: 1000, encoding: 'utf8' }).trim() || "Unknown";
+        }
+        const iwOutput = execSync("iw dev | grep Interface | awk '{print $2}' | xargs -I {} iw dev {} link", { timeout: 2000, encoding: 'utf8' }).toString();
+        const signalMatch = iwOutput.match(/signal:\s+(-?\d+)\s+dBm/);
+        if (signalMatch) signal = parseInt(signalMatch[1]);
+        const statsOutput = execSync("cat /proc/net/dev | grep -E 'wl|wlan' || true", { timeout: 1000, encoding: 'utf8' }).toString();
+        if (statsOutput.trim()) {
+          const stats = statsOutput.trim().split(/\s+/);
+          if (stats.length > 10) {
+            traffic = { rx: parseInt(stats[1]), tx: parseInt(stats[9]) };
+          }
+        }
+        try {
+          execSync("ping -c 1 -W 1 8.8.8.8", { timeout: 1500 });
+          connectivity = true;
+        } catch {
+          connectivity = false;
+        }
+      } catch {
+        // Silent fail for background telemetry
+      }
+
+      logTee(`📡 Forensic Telemetry Snapshot [${ts}]: Signal=${signal}dBm, RX=${traffic.rx}B, TX=${traffic.tx}B, Connectivity=${connectivity ? "ONLINE" : "OFFLINE"}, BKW_IFACE=${bkwInterface}`);
+    }, 30000);
   });
 }
 

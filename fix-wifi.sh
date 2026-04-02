@@ -53,7 +53,19 @@ log_and_tee() {
   local ts=$(date '+%Y-%m-%d %H:%M:%S.%3N')
   echo -e "\033[1;36m[$ts]\033[0m $1" | tee -a "$LOG_FILE"
 }
-trap 'log_and_tee "❌ FATAL ERROR at line $LINENO"; dump_stack "$LINENO"; release_mutex' ERR INT TERM EXIT
+
+# Improved trap logic to avoid "FATAL ERROR" on successful exit
+trap 'FAILED_LINE=$LINENO' ERR
+cleanup() {
+  local exit_code=$?
+  if [[ $exit_code -ne 0 ]]; then
+    log_and_tee "❌ FATAL ERROR at line ${FAILED_LINE:-$LINENO} (Exit Code: $exit_code)"
+    dump_stack "${FAILED_LINE:-$LINENO}"
+  fi
+  release_mutex
+}
+trap cleanup EXIT
+trap 'exit 1' INT TERM
 log_and_tee "🛡️  Forensic error traps and signal handlers activated."
 
 # POINT 2-3: Path Transparency.
