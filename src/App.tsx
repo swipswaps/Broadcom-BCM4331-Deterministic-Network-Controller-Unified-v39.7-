@@ -123,7 +123,7 @@ export default function App() {
     if (status && !status.isFixing && audit?.status !== 'RECOVERY_COMPLETE') {
       fetchAudit();
     }
-  }, [status?.isFixing]);
+  }, [status, audit?.status]);
 
   useEffect(() => {
     if (logEndRef.current) {

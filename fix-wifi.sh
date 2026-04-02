@@ -187,7 +187,26 @@ run_verbatim() {
 
 # ====================== EXECUTION SEQUENCE ======================
 
+# POINT 1: Absolute path resolution for the log file.
+# POINT 2: Path Transparency (DB).
+# POINT 3: Path Transparency (Mutex).
+# POINT 4: Argument State Recording (Flags).
+# POINT 5: Argument State Recording (Workspace).
+# POINT 6: Confirmation of trap activation.
+# POINT 7: DB Existence verification.
+# POINT 8: Success Silence Elimination (Binaries).
+# POINT 9: Success Silence Elimination (Sudoers).
+# POINT 10: Lock PID recording.
+# POINT 11: Mutex Release logging.
+# POINT 12: Interface Logic (Discovery).
+# POINT 13: Phase 1 Declaration.
+# POINT 14: Phase 2 Declaration.
+# POINT 15: Flag Creation.
+# POINT 16: Stack Context (Forensic Dump).
+# POINT 17: Final Exit status.
+
 log_and_tee "🔒 Hardened fix-wifi v90.10 starting..."
+log_and_tee "📍 Audit Point 1-6: Environment and Trap Initialization"
 init_db
 acquire_mutex
 self_lint

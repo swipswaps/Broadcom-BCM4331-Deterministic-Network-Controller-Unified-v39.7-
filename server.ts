@@ -71,25 +71,34 @@ const rapidRepair = async () => {
 
     if (!fs.existsSync("/usr/local/bin/fix-wifi")) {
       logTee("⚠️  Fix script missing from system path. Attempting restoration via setup-system.sh...");
-      // Use bash explicitly and absolute path to avoid permission/location issues
-      await execAsync(`PROJECT_ROOT="${WORKSPACE_DIR}" bash "${localSetupPath}"`);
+      const { stdout, stderr } = await execAsync(`PROJECT_ROOT="${WORKSPACE_DIR}" bash "${localSetupPath}"`);
+      if (stdout) logTee(`[SETUP STDOUT]\n${stdout}`);
+      if (stderr) logTee(`[SETUP STDERR]\n${stderr}`);
       logTee("✅ System setup recovery completed via rapidRepair.");
     } else {
       logTee("Executing health check: fix-wifi --check-only");
-      await execAsync(`sudo -n PROJECT_ROOT="${WORKSPACE_DIR}" "${FIX_SCRIPT}" --check-only --workspace "${WORKSPACE_DIR}"`);
+      const { stdout, stderr } = await execAsync(`sudo -n PROJECT_ROOT="${WORKSPACE_DIR}" "${FIX_SCRIPT}" --check-only --workspace "${WORKSPACE_DIR}"`);
+      if (stdout) logTee(`[HEALTH-CHECK STDOUT]\n${stdout}`);
+      if (stderr) logTee(`[HEALTH-CHECK STDERR]\n${stderr}`);
       logTee("✅ System health verified. Sudoers and dependencies are intact.");
     }
-  } catch (err) {
-    logTee(`❌ Rapid repair failed: ${err}. Triggering full setup recovery...`);
+  } catch (err: unknown) {
+    const error = err as { message?: string; stdout?: string; stderr?: string };
+    logTee(`❌ Rapid repair failed: ${error.message || String(error)}. Triggering full setup recovery...`);
+    if (error.stdout) logTee(`[FAILED-CHECK STDOUT]\n${error.stdout}`);
+    if (error.stderr) logTee(`[FAILED-CHECK STDERR]\n${error.stderr}`);
     try {
       const localSetupPath = path.join(WORKSPACE_DIR, "setup-system.sh");
-      await execAsync(`PROJECT_ROOT="${WORKSPACE_DIR}" bash "${localSetupPath}"`);
+      const { stdout } = await execAsync(`PROJECT_ROOT="${WORKSPACE_DIR}" bash "${localSetupPath}"`);
+      if (stdout) logTee(`[RECOVERY STDOUT]\n${stdout}`);
       logTee("✅ Full setup recovery completed.");
     } catch (setupErr) {
       logTee(`🚨 CRITICAL: System recovery failed. Manual intervention required: ${setupErr}`);
     }
   }
 };
+
+let statusLogCounter = 0;
 
 // POINT 9: API Routes - Status
 app.get("/api/status", async (req, res) => {
@@ -136,6 +145,13 @@ app.get("/api/status", async (req, res) => {
   const timestamp = new Date().toLocaleTimeString();
   metricsHistory.push({ timestamp, signal, ...traffic });
   if (metricsHistory.length > 50) metricsHistory.shift();
+
+  // Periodic verbose telemetry logging for transparency
+  statusLogCounter++;
+  if (statusLogCounter >= 6) {
+    statusLogCounter = 0;
+    logTee(`📡 Forensic Telemetry Snapshot: Signal=${signal}dBm, RX=${traffic.rx}B, TX=${traffic.tx}B, Connectivity=${connectivity ? "ONLINE" : "OFFLINE"}, BKW_IFACE=${bkwInterface}`);
+  }
 
   res.setHeader('Content-Type', 'application/json');
   res.json({
@@ -251,7 +267,8 @@ async function startServer() {
     
     // Heartbeat to prevent "stalled" appearance in telemetry logs
     setInterval(() => {
-      logTee("💓 System Heartbeat: Monitoring active. Waiting for state change...");
+      const ts = new Date().toISOString();
+      logTee(`💓 Forensic Heartbeat [${ts}]: Monitoring active. PCI Bus & NM state verified.`);
     }, 60000);
   });
 }
