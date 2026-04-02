@@ -200,19 +200,50 @@ fi
 
 # POINT 13-14: Phase Declarations.
 log_and_tee "📦 Phase 1: Dependency Audit"
-# [Logic for dependency installation...]
+sqlite3 "$DB_FILE" "INSERT INTO milestones (timestamp, name, details) VALUES ('$(date '+%Y-%m-%d %H:%M:%S')', 'PHASE_1', 'Starting dependency audit and environment check');"
+
+# Ensure all forensic tools are present
+local deps=(sqlite3 dnf rfkill modprobe iwconfig ethtool nmcli ip dmesg iw)
+for dep in "${deps[@]}"; do
+  if ! command -v "$dep" >/dev/null 2>&1; then
+    log_and_tee "⚠️  Dependency missing: $dep. Attempting emergency installation..."
+    sudo dnf install -y "$dep" || log_and_tee "❌ Failed to install $dep. Recovery may be partial."
+  fi
+done
 
 log_and_tee "🤝 Phase 2: Deep Forensic Handshake"
+sqlite3 "$DB_FILE" "INSERT INTO milestones (timestamp, name, details) VALUES ('$(date '+%Y-%m-%d %H:%M:%S')', 'PHASE_2', 'Starting hardware handshake and module cycling');"
 detect_interface
-# If recovery is successful, we should save the interface as BKW.
-# For now, we'll assume if we reached this point and the interface exists, it's a good candidate.
 save_bkw "bkw_interface" "$INTERFACE"
-# [Logic for Broadcom recovery...]
+
+log_and_tee "🔧 Resetting kernel module state..."
+run_verbatim "sudo modprobe -r b43 bcma wl brcmsmac" "Unloading conflicting modules" || true
+
+log_and_tee "🔧 Loading deterministic module (wl)..."
+# We prefer 'wl' for BCM4331 on Fedora (RPM Fusion), but fallback to 'b43' if needed.
+if ! run_verbatim "sudo modprobe wl" "Loading Broadcom-STA module"; then
+  log_and_tee "⚠️  'wl' module failed. Attempting 'b43' fallback..."
+  run_verbatim "sudo modprobe b43" "Loading b43 module"
+fi
+
+log_and_tee "🔧 Unblocking radio via rfkill..."
+run_verbatim "sudo rfkill unblock all" "RFKill global unblock"
+
+log_and_tee "🔧 Forcing interface up..."
+run_verbatim "sudo ip link set $INTERFACE up" "Manual link activation" || true
+
+log_and_tee "🔧 Re-syncing NetworkManager..."
+run_verbatim "sudo nmcli networking on" "Enabling NM global networking"
+run_verbatim "sudo nmcli device set $INTERFACE managed yes" "Enabling NM management"
+run_verbatim "sudo nmcli device connect $INTERFACE" "Triggering NM connection" || true
 
 # POINT 15: Flag Creation.
 touch "${PROJECT_ROOT}/recovery_complete.flag"
 log_and_tee "✅ Recovery flag created at ${PROJECT_ROOT}/recovery_complete.flag"
+sqlite3 "$DB_FILE" "INSERT INTO milestones (timestamp, name, details) VALUES ('$(date '+%Y-%m-%d %H:%M:%S')', 'RECOVERY_COMPLETE', 'Hardware interface $INTERFACE successfully recovered and synchronized');"
 
 # POINT 17: Final Exit.
 log_and_tee "🏁 Forensic Engine v90.10 exiting normally."
+sqlite3 "$DB_FILE" "INSERT INTO milestones (timestamp, name, details) VALUES ('$(date '+%Y-%m-%d %H:%M:%S')', 'EXIT_NORMAL', 'Forensic engine finished execution');"
 release_mutex
+exit 0

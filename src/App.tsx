@@ -118,6 +118,13 @@ export default function App() {
     };
   }, []);
 
+  // Refresh audit data when a fix finishes
+  useEffect(() => {
+    if (status && !status.isFixing && audit?.status !== 'RECOVERY_COMPLETE') {
+      fetchAudit();
+    }
+  }, [status?.isFixing]);
+
   useEffect(() => {
     if (logEndRef.current) {
       logEndRef.current.scrollIntoView({ behavior: 'smooth' });

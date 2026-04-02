@@ -158,7 +158,8 @@ app.get('/api/audit', async (req, res) => {
     let dbMilestones = "No database found.";
     if (fs.existsSync(DB_FILE)) {
       try {
-        dbMilestones = execSync(`sqlite3 "${DB_FILE}" "SELECT timestamp, name, details FROM milestones ORDER BY timestamp ASC;"`).toString();
+        // Explicitly use pipe separator for consistent parsing in App.tsx
+        dbMilestones = execSync(`sqlite3 -separator "|" "${DB_FILE}" "SELECT timestamp, name, details FROM milestones ORDER BY timestamp ASC;"`).toString();
       } catch (dbErr) {
         dbMilestones = `Error reading database: ${dbErr}`;
       }
@@ -247,6 +248,11 @@ async function startServer() {
   app.listen(PORT, "0.0.0.0", () => {
     logTee(`📡 Broadcom Control Center listening on http://localhost:${PORT}`);
     rapidRepair();
+    
+    // Heartbeat to prevent "stalled" appearance in telemetry logs
+    setInterval(() => {
+      logTee("💓 System Heartbeat: Monitoring active. Waiting for state change...");
+    }, 60000);
   });
 }
 
