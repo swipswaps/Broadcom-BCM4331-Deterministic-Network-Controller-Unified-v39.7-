@@ -23,6 +23,14 @@ const logTee = (msg: string) => {
   }
 };
 
+process.on('unhandledRejection', (reason, promise) => {
+  logTee(`🚨 UNHANDLED REJECTION: ${reason} at ${promise}`);
+});
+
+process.on('uncaughtException', (err) => {
+  logTee(`🚨 UNCAUGHT EXCEPTION: ${err.message}\n${err.stack}`);
+});
+
 // POINTS 1-4: Environment Resolution
 // We log these immediately to ensure the audit trail starts with path context.
 logTee(`Initializing Broadcom Control Center...`);
@@ -62,7 +70,7 @@ const rapidRepair = async () => {
     }
     
     logTee("Executing health check: fix-wifi --check-only");
-    await execAsync(`sudo -n "${FIX_SCRIPT}" --check-only`);
+    await execAsync(`sudo -n PROJECT_ROOT="${WORKSPACE_DIR}" "${FIX_SCRIPT}" --check-only --workspace "${WORKSPACE_DIR}"`);
     logTee("✅ System health verified. Sudoers and dependencies are intact.");
   } catch (err) {
     logTee(`❌ Rapid repair failed: ${err}. Triggering full setup recovery...`);
@@ -151,7 +159,7 @@ app.post("/api/fix", async (req, res) => {
 
   res.json({ message: "Recovery initiated" });
 
-  const cmd = `sudo -n "${FIX_SCRIPT}" --workspace "${WORKSPACE_DIR}" --force`;
+  const cmd = `sudo -n PROJECT_ROOT="${WORKSPACE_DIR}" "${FIX_SCRIPT}" --workspace "${WORKSPACE_DIR}" --force`;
   logTee(`🚀 Spawning recovery process: ${cmd}`);
 
   try {

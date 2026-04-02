@@ -3,10 +3,9 @@
 set -euo pipefail
 
 # CRITICAL: Print log path as the absolute first line of STDOUT
-PROJECT_ROOT="${PROJECT_ROOT:-}"
-if [[ -z "$PROJECT_ROOT" ]]; then
-  echo "ERROR: PROJECT_ROOT environment variable is required." >&2
-  exit 1
+# Fallback: if PROJECT_ROOT is missing, try to derive it from the script's directory.
+if [[ -z "${PROJECT_ROOT:-}" ]]; then
+  PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 fi
 LOG_FILE="${PROJECT_ROOT}/verbatim_handshake.log"
 echo "${LOG_FILE}"

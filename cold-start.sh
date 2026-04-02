@@ -3,10 +3,9 @@
 set -euo pipefail
 
 # CRITICAL: Print log path as the absolute first line of STDOUT
-PROJECT_ROOT="${PROJECT_ROOT:-}"
-if [[ -z "$PROJECT_ROOT" ]]; then
-  echo "ERROR: PROJECT_ROOT environment variable is required." >&2
-  exit 1
+# Fallback: if PROJECT_ROOT is missing, try to derive it from the script's directory.
+if [[ -z "${PROJECT_ROOT:-}" ]]; then
+  PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 fi
 LOG_FILE="${PROJECT_ROOT}/verbatim_handshake.log"
 echo "${LOG_FILE}"
@@ -48,11 +47,13 @@ retry_command() {
 
 acquire_mutex
 
-# Rapid recovery block: clear ports
-sudo fuser -k 3000/tcp 24678/tcp 2>/dev/null || true
+# Rapid recovery block: clear vite hmr port only, don't kill the main server port 3000
+# as it would cause a NetworkError in the browser.
+sudo fuser -k 24678/tcp 2>/dev/null || true
 
-# Execute the core engine
-retry_command "sudo -n /usr/local/bin/fix-wifi --workspace \"${PROJECT_ROOT}\" --force" "Nuclear recovery"
+# Execute the core engine. We use sudo -E to preserve PROJECT_ROOT environment variable.
+# The sudoers rule includes SETENV, which allows this.
+retry_command "sudo -n -E /usr/local/bin/fix-wifi --workspace \"${PROJECT_ROOT}\" --force" "Nuclear recovery"
 
 touch "${PROJECT_ROOT}/recovery_complete.flag"
 rm -f "${PROJECT_ROOT}/.recovery_mutex"

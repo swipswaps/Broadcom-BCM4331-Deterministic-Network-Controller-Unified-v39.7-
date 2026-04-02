@@ -9,13 +9,39 @@
 
 set -euo pipefail
 
+# POINT 4-5: Argument State Recording.
+# Recording the input flags ensures that the audit trail reflects whether
+# the user forced a recovery or was just performing a health check.
+FORCE=0
+CHECK_ONLY=0
+# We allow PROJECT_ROOT to be set via environment OR --workspace argument.
+PROJECT_ROOT="${PROJECT_ROOT:-}"
+
+# Parse arguments first to capture --workspace before any validation.
+TEMP_ARGS=("$@")
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --force) FORCE=1; shift ;;
+    --check-only) CHECK_ONLY=1; shift ;;
+    --workspace) PROJECT_ROOT="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+# Restore arguments for any later use if needed.
+set -- "${TEMP_ARGS[@]}"
+
 # POINT 1: Absolute path resolution for the log file.
 # This is the first line of output to ensure orchestrators can find the stream.
 # We enforce PROJECT_ROOT to prevent "silent" failures in system paths.
-PROJECT_ROOT="${PROJECT_ROOT:-}"
-if [[ -z "$PROJECT_ROOT" ]]; then
-  echo "ERROR: PROJECT_ROOT environment variable is required for forensic path integrity." >&2
-  exit 1
+# Fallback: if PROJECT_ROOT is missing, try to derive it from the script's directory.
+if [[ -z "${PROJECT_ROOT:-}" ]]; then
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  # If we are in /usr/local/bin, we can't use it as PROJECT_ROOT.
+  if [[ "$SCRIPT_DIR" == "/usr/local/bin" ]]; then
+    echo "ERROR: PROJECT_ROOT environment variable or --workspace argument is required when running from system path." >&2
+    exit 1
+  fi
+  PROJECT_ROOT="$SCRIPT_DIR"
 fi
 LOG_FILE="${PROJECT_ROOT}/verbatim_handshake.log"
 echo "${LOG_FILE}"
@@ -37,20 +63,6 @@ DB_FILE="${PROJECT_ROOT}/recovery_state.db"
 MUTEX="${PROJECT_ROOT}/.recovery_mutex"
 log_and_tee "🗄️  DB_PATH: ${DB_FILE}"
 log_and_tee "🔒 MUTEX_PATH: ${MUTEX}"
-
-# POINT 4-5: Argument State Recording.
-# Recording the input flags ensures that the audit trail reflects whether
-# the user forced a recovery or was just performing a health check.
-FORCE=0
-CHECK_ONLY=0
-while [[ $# -gt 0 ]]; do
-  case $1 in
-    --force) FORCE=1; shift ;;
-    --check-only) CHECK_ONLY=1; shift ;;
-    --workspace) PROJECT_ROOT="$2"; shift 2 ;;
-    *) shift ;;
-  esac
-done
 log_and_tee "⚙️  EXECUTION_MODE: FORCE=${FORCE}, CHECK_ONLY=${CHECK_ONLY}"
 
 # ====================== FORENSIC CORE FUNCTIONS ======================

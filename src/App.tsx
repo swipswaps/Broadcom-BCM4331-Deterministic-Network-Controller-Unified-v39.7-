@@ -44,6 +44,7 @@ interface AuditData {
 export default function App() {
   const [status, setStatus] = useState<StatusData | null>(null);
   const [audit, setAudit] = useState<AuditData | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<'dashboard' | 'logs' | 'forensics'>('dashboard');
   const [isRefreshing, setIsRefreshing] = useState(false);
   const logEndRef = useRef<HTMLDivElement>(null);
@@ -51,9 +52,12 @@ export default function App() {
   const fetchStatus = async () => {
     try {
       const res = await fetch('/api/status');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setStatus(data);
+      setError(null);
     } catch (e) {
+      setError("Backend Offline - Run 'npm run dev' to start controller");
       console.error("Failed to fetch status", e);
     }
   };
@@ -61,6 +65,7 @@ export default function App() {
   const fetchAudit = async () => {
     try {
       const res = await fetch('/api/audit');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       setAudit(data);
     } catch (e) {
@@ -142,7 +147,20 @@ export default function App() {
         </div>
       </header>
 
-      <main className="max-w-7xl mx-auto px-6 py-8">
+      <main className="max-w-7xl mx-auto px-6 py-8 relative">
+        <AnimatePresence>
+          {error && (
+            <motion.div 
+              initial={{ opacity: 0, y: -20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -20 }}
+              className="mb-8 p-4 bg-rose-500/10 border border-rose-500/20 rounded-xl flex items-center gap-3 text-rose-400 text-xs font-bold uppercase tracking-wider"
+            >
+              <XCircle className="w-4 h-4" />
+              {error}
+            </motion.div>
+          )}
+        </AnimatePresence>
         {/* Navigation Tabs */}
         <div className="flex gap-1 p-1 bg-white/5 rounded-xl border border-white/10 w-fit mb-8">
           {[
@@ -209,11 +227,11 @@ export default function App() {
                   <div className="space-y-4">
                     <div className="flex items-center justify-between">
                       <span className="text-xs text-slate-400">RX Rate</span>
-                      <span className="text-sm font-mono text-white">{(status?.traffic.rx || 0 / 1024).toFixed(2)} KB/s</span>
+                      <span className="text-sm font-mono text-white">{( (status?.traffic.rx || 0) / 1024).toFixed(2)} KB/s</span>
                     </div>
                     <div className="flex items-center justify-between">
                       <span className="text-xs text-slate-400">TX Rate</span>
-                      <span className="text-sm font-mono text-white">{(status?.traffic.tx || 0 / 1024).toFixed(2)} KB/s</span>
+                      <span className="text-sm font-mono text-white">{( (status?.traffic.tx || 0) / 1024).toFixed(2)} KB/s</span>
                     </div>
                   </div>
                   <div className="mt-6 h-24">
