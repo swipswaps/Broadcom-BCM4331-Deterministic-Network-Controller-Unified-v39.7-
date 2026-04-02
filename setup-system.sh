@@ -23,6 +23,14 @@ log_and_tee "Configuring passwordless sudoers drop-in..."
 sudo rm -f /etc/sudoers.d/broadcom-control
 sudo tee /etc/sudoers.d/broadcom-control > /dev/null <<EOF
 $(whoami) ALL=(ALL) NOPASSWD: SETENV: /usr/local/bin/fix-wifi
+$(whoami) ALL=(ALL) NOPASSWD: /usr/sbin/tcpdump
+$(whoami) ALL=(ALL) NOPASSWD: /usr/sbin/modprobe
+$(whoami) ALL=(ALL) NOPASSWD: /usr/sbin/rfkill
+$(whoami) ALL=(ALL) NOPASSWD: /usr/bin/nmcli
+$(whoami) ALL=(ALL) NOPASSWD: /usr/bin/systemctl
+$(whoami) ALL=(ALL) NOPASSWD: /usr/sbin/iw
+$(whoami) ALL=(ALL) NOPASSWD: /usr/sbin/ip
+$(whoami) ALL=(ALL) NOPASSWD: /usr/bin/pkill
 EOF
 sudo chmod 0440 /etc/sudoers.d/broadcom-control
 sudo visudo -c -f /etc/sudoers.d/broadcom-control || { log_and_tee "❌ Sudoers invalid – aborting"; exit 1; }

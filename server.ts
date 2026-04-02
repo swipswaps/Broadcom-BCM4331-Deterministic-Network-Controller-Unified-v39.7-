@@ -227,14 +227,41 @@ app.get("/api/events", (req, res) => {
   res.setHeader("Cache-Control", "no-cache");
   res.setHeader("Connection", "keep-alive");
 
+  // Track byte offset per client for delta streaming
+  let clientOffset = 0;
+  try {
+    if (fs.existsSync(LOG_FILE)) {
+      clientOffset = fs.statSync(LOG_FILE).size;
+    }
+  } catch {
+    clientOffset = 0;
+  }
+
   const sendEvent = (data: { type: string; content: string }) => {
     res.write(`data: ${JSON.stringify(data)}\n\n`);
   };
 
   const interval = setInterval(async () => {
-    if (fs.existsSync(LOG_FILE)) {
-      const log = await fs.promises.readFile(LOG_FILE, 'utf8');
-      sendEvent({ type: "log", content: log.slice(-2000) });
+    if (!fs.existsSync(LOG_FILE)) return;
+    try {
+      const stat = fs.statSync(LOG_FILE);
+      // Reset if file was truncated or rotated
+      if (clientOffset > stat.size) clientOffset = 0;
+      if (stat.size <= clientOffset) return;
+
+      const fd = fs.openSync(LOG_FILE, 'r');
+      const deltaSize = stat.size - clientOffset;
+      const buf = Buffer.alloc(deltaSize);
+      fs.readSync(fd, buf, 0, deltaSize, clientOffset);
+      fs.closeSync(fd);
+      
+      clientOffset = stat.size;
+      const delta = buf.toString('utf8');
+      if (delta.trim()) {
+        sendEvent({ type: "log", content: delta });
+      }
+    } catch {
+      // Silent fail for SSE
     }
   }, 2000);
 
@@ -273,12 +300,17 @@ async function startServer() {
       let traffic = { rx: 0, tx: 0 };
       let connectivity = false;
       let bkwInterface = "Unknown";
+      let latestMilestones: string[] = [];
 
       try {
         // 1. BKW Interface from DB
         if (fs.existsSync(DB_FILE)) {
           try {
             bkwInterface = execSync(`sqlite3 "${DB_FILE}" "SELECT value FROM config WHERE key='bkw_interface';"`, { timeout: 1000, encoding: 'utf8' }).trim() || "Unknown";
+            
+            // Query for latest milestones
+            const milestonesOutput = execSync(`sqlite3 -separator " | " "${DB_FILE}" "SELECT timestamp, name, details FROM milestones ORDER BY timestamp DESC LIMIT 5;"`, { timeout: 1000, encoding: 'utf8' });
+            latestMilestones = milestonesOutput.trim().split('\n').filter(Boolean);
           } catch {
             // Silent fail for background
           }
@@ -337,7 +369,20 @@ async function startServer() {
       metricsHistory.push({ timestamp: timeStr, signal, ...traffic });
       if (metricsHistory.length > 50) metricsHistory.shift();
 
-      logTee(`📡 Forensic Telemetry Snapshot [${ts}]: Signal=${signal}dBm, RX=${traffic.rx}B, TX=${traffic.tx}B, Connectivity=${connectivity ? "ONLINE" : "OFFLINE"}, BKW_IFACE=${bkwInterface}`);
+      // Labelled terminal output
+      console.log("\x1b[2J\x1b[H"); // Clear terminal and move cursor to top
+      logTee(`📡 Telemetry Tick [${ts}]:`);
+      logTee(`   Signal:        ${signal} dBm`);
+      logTee(`   RX Bytes:      ${traffic.rx}`);
+      logTee(`   TX Bytes:      ${traffic.tx}`);
+      logTee(`   Connectivity:  ${connectivity ? "ONLINE" : "OFFLINE"}`);
+      logTee(`   BKW Interface: ${bkwInterface}`);
+      
+      if (latestMilestones.length > 0) {
+        console.log("\n   \x1b[1;33m[LATEST AUDIT POINTS]\x1b[0m");
+        latestMilestones.forEach(m => console.log(`   📍 ${m}`));
+      }
+      
       renderTerminalDashboard();
     }, 10000); // Increased frequency to 10s for better responsiveness
   });

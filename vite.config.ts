@@ -20,7 +20,14 @@ export default defineConfig(({mode}) => {
       // Do not modifyâfile watching is disabled to prevent flickering during agent edits.
       hmr: process.env.DISABLE_HMR !== 'true',
       watch: {
-        ignored: ['**/verbatim_handshake.log', '**/recovery_state.db*'],
+        ignored: [
+          '**/*.db',
+          '**/*.db-shm',
+          '**/*.db-wal',
+          '**/*.log',
+          '**/recovery_complete.flag',
+          '**/.recovery_mutex',
+        ],
       },
     },
   };
