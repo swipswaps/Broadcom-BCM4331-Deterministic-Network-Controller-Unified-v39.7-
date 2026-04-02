@@ -1,32 +1,43 @@
 #!/bin/bash
-# cold-start.sh - Nuclear Orchestrator v30.3 HARDENED
+# cold-start.sh - Nuclear Orchestrator v30.4 HARDENED
 set -euo pipefail
-exec > >(tee -a verbatim_handshake.log) 2>&1
+
+# CRITICAL: Print log path as the absolute first line of STDOUT
+PROJECT_ROOT="${PROJECT_ROOT:-}"
+if [[ -z "$PROJECT_ROOT" ]]; then
+  echo "ERROR: PROJECT_ROOT environment variable is required." >&2
+  exit 1
+fi
+LOG_FILE="${PROJECT_ROOT}/verbatim_handshake.log"
+echo "${LOG_FILE}"
+
+# Redirect all output to the log file while also displaying in terminal
+exec > >(tee -a "$LOG_FILE") 2>&1
 
 log_and_tee() {
-  echo -e "\033[1;36m[$(date '+%H:%M:%S')]\033[0m $1" | tee -a verbatim_handshake.log
+  echo -e "\033[1;36m[$(date '+%H:%M:%S')]\033[0m $1" | tee -a "$LOG_FILE"
 }
 
-log_and_tee "Cold-Start Nuclear Orchestrator v30.3 (hardened) starting..."
+log_and_tee "Cold-Start Nuclear Orchestrator v30.4 starting..."
 
-if [ -f "recovery_complete.flag" ] && [ "${1:-}" != "--force" ]; then
-  log_and_tee "Idempotent skip – already complete"
+if [ -f "${PROJECT_ROOT}/recovery_complete.flag" ] && [ "${1:-}" != "--force" ]; then
+  log_and_tee "Idempotent skip – already complete. Use --force to override."
   exit 0
 fi
 
 acquire_mutex() {
-  if [ -f ".recovery_mutex" ] && kill -0 "$(cat .recovery_mutex)" 2>/dev/null; then
+  if [ -f "${PROJECT_ROOT}/.recovery_mutex" ] && kill -0 "$(cat ${PROJECT_ROOT}/.recovery_mutex)" 2>/dev/null; then
     log_and_tee "⚠️  Another recovery in progress – skipping"
     exit 0
   fi
-  echo $$ > ".recovery_mutex"
+  echo $$ > "${PROJECT_ROOT}/.recovery_mutex"
 }
 
 retry_command() {
   local cmd="$1" desc="${2:-Command}" max=5
   for i in $(seq 1 $max); do
     log_and_tee "→ [RETRY $i/$max] $desc"
-    if eval "$cmd" 2>&1 | tee -a verbatim_handshake.log; then
+    if eval "$cmd"; then
       return 0
     fi
     sleep $((2**i))
@@ -37,10 +48,13 @@ retry_command() {
 
 acquire_mutex
 
+# Rapid recovery block: clear ports
 sudo fuser -k 3000/tcp 24678/tcp 2>/dev/null || true
-retry_command "sudo -n /usr/local/bin/fix-wifi --workspace \"$(pwd)\" --force" "Nuclear recovery"
 
-touch recovery_complete.flag
-rm -f ".recovery_mutex"
+# Execute the core engine
+retry_command "sudo -n /usr/local/bin/fix-wifi --workspace \"${PROJECT_ROOT}\" --force" "Nuclear recovery"
+
+touch "${PROJECT_ROOT}/recovery_complete.flag"
+rm -f "${PROJECT_ROOT}/.recovery_mutex"
 
 log_and_tee "Cold-Start COMPLETE – dashboard ready at http://localhost:3000"

@@ -1,12 +1,25 @@
 #!/bin/bash
-# setup-system.sh - System Integration v30.3 HARDENED
+# setup-system.sh - System Integration v30.4 HARDENED
 set -euo pipefail
-exec > >(tee -a verbatim_handshake.log) 2>&1
 
-log_and_tee() { echo -e "\033[1;36m[$(date '+%H:%M:%S')]\033[0m $1" | tee -a verbatim_handshake.log; }
+# CRITICAL: Print log path as the absolute first line of STDOUT
+PROJECT_ROOT="${PROJECT_ROOT:-}"
+if [[ -z "$PROJECT_ROOT" ]]; then
+  echo "ERROR: PROJECT_ROOT environment variable is required." >&2
+  exit 1
+fi
+LOG_FILE="${PROJECT_ROOT}/verbatim_handshake.log"
+echo "${LOG_FILE}"
 
-log_and_tee "System Integration v30.3 (hardened) starting..."
+# Redirect all output to the log file while also displaying in terminal
+exec > >(tee -a "$LOG_FILE") 2>&1
 
+log_and_tee() { echo -e "\033[1;36m[$(date '+%H:%M:%S')]\033[0m $1" | tee -a "$LOG_FILE"; }
+
+log_and_tee "System Integration v30.4 starting..."
+
+# Self-validate & repair sudoers
+log_and_tee "Configuring passwordless sudoers drop-in..."
 sudo rm -f /etc/sudoers.d/broadcom-control
 sudo tee /etc/sudoers.d/broadcom-control > /dev/null <<EOF
 $(whoami) ALL=(ALL) NOPASSWD: SETENV: /usr/local/bin/fix-wifi
@@ -14,10 +27,10 @@ EOF
 sudo chmod 0440 /etc/sudoers.d/broadcom-control
 sudo visudo -c -f /etc/sudoers.d/broadcom-control || { log_and_tee "❌ Sudoers invalid – aborting"; exit 1; }
 
+log_and_tee "Installing forensic dependencies..."
 sudo dnf install -y sqlite tcpdump mtr traceroute bind-utils NetworkManager iw rfkill python3-pip || true
-# Note: pip install might fail in some environments, but we try anyway
-sudo pip3 install pystray pillow --break-system-packages || true
 
+log_and_tee "Deploying recovery script to system path..."
 sudo cp fix-wifi.sh /usr/local/bin/fix-wifi
 sudo chmod +x /usr/local/bin/fix-wifi
 

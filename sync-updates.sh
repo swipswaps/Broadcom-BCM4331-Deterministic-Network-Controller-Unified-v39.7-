@@ -1,25 +1,32 @@
 #!/usr/bin/env bash
-# sync-updates.sh - Repo sync + dependency + build orchestrator
+# sync-updates.sh - Repo sync v1.1 HARDENED
 set -euo pipefail
 
-PROJECT_ROOT="${PROJECT_ROOT:-$(pwd)}"
-cd "$PROJECT_ROOT"
+# CRITICAL: Print log path as the absolute first line of STDOUT
+PROJECT_ROOT="${PROJECT_ROOT:-}"
+if [[ -z "$PROJECT_ROOT" ]]; then
+  echo "ERROR: PROJECT_ROOT environment variable is required." >&2
+  exit 1
+fi
+LOG_FILE="${PROJECT_ROOT}/verbatim_handshake.log"
+echo "${LOG_FILE}"
 
-echo "[SYNC] Checking local repository state..."
+cd "$PROJECT_ROOT"
+echo "[SYNC] Starting synchronization..." | tee -a "$LOG_FILE"
+
+echo "[SYNC] Checking local repository state..." | tee -a "$LOG_FILE"
 git add -A
 if ! git diff --cached --quiet; then
   git commit -m "chore: local state preservation before sync ($(date +%Y%m%d-%H%M))"
 fi
 
-echo "[SYNC] Reconciling with upstream (git pull --rebase origin main)..."
-# In AI Studio, we might not have a remote, but we keep the logic
-git pull --rebase origin main || echo "[SYNC] Remote sync skipped (no upstream)"
+echo "[SYNC] Reconciling with upstream..." | tee -a "$LOG_FILE"
+git pull --rebase origin main || echo "[SYNC] Remote sync skipped (no upstream)" | tee -a "$LOG_FILE"
 
-echo "[SYNC] Restoring environment (npm install)..."
+echo "[SYNC] Restoring environment (npm install)..." | tee -a "$LOG_FILE"
 npm install
 
-echo "[SYNC] Verifying system integrity (npm run lint)..."
+echo "[SYNC] Verifying system integrity (npm run lint)..." | tee -a "$LOG_FILE"
 npm run lint
 
-echo "[SYNC] SUCCESS: System is synchronized and verified."
-echo "[SYNC] Run 'npm run audit' to verify the forensic database."
+echo "[SYNC] SUCCESS: System is synchronized and verified." | tee -a "$LOG_FILE"
