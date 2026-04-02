@@ -86,8 +86,25 @@ dump_stack() {
 # if multiple Broadcom cards exist, we always target the primary one.
 detect_interface() {
   log_and_tee "📡 Searching for wireless hardware via /sys/class/net..."
-  INTERFACE=$(ls /sys/class/net 2>/dev/null | grep -E '^(wl|wlan)' | sort | head -n1 || echo "wlan0")
-  log_and_tee "✅ Hardware interface identified: ${INTERFACE}"
+  
+  # Try to retrieve BKW interface from database first
+  local bkw_iface=$(sqlite3 "$DB_FILE" "SELECT value FROM config WHERE key='bkw_interface';" 2>/dev/null || true)
+  
+  if [[ -n "$bkw_iface" ]] && [[ -d "/sys/class/net/$bkw_iface" ]]; then
+    INTERFACE="$bkw_iface"
+    log_and_tee "💎 Best Known Working interface retrieved from DB: ${INTERFACE}"
+  else
+    INTERFACE=$(ls /sys/class/net 2>/dev/null | grep -E '^(wl|wlan)' | sort | head -n1 || echo "wlan0")
+    log_and_tee "✅ Hardware interface identified via discovery: ${INTERFACE}"
+  fi
+}
+
+save_bkw() {
+  local key="$1"
+  local value="$2"
+  local ts=$(date '+%Y-%m-%d %H:%M:%S')
+  log_and_tee "💾 Saving Best Known Working resource: ${key}=${value}"
+  sqlite3 "$DB_FILE" "INSERT OR REPLACE INTO config (key, value, last_updated) VALUES ('${key}', '${value}', '${ts}');"
 }
 
 # POINT 7: DB Existence.
@@ -98,10 +115,13 @@ init_db() {
     log_and_tee "🗄️  Forensic DB missing. Creating new schema..."
     sqlite3 "$DB_FILE" "CREATE TABLE milestones (timestamp TEXT, name TEXT, details TEXT); 
                         CREATE TABLE commands (timestamp TEXT, command TEXT, exit_code INTEGER);
+                        CREATE TABLE config (key TEXT PRIMARY KEY, value TEXT, last_updated TEXT);
                         CREATE INDEX idx_milestones_name ON milestones(name);
                         PRAGMA journal_mode=WAL;"
   else
     log_and_tee "✅ Existing forensic database verified."
+    # Ensure config table exists in case of older DB versions
+    sqlite3 "$DB_FILE" "CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT, last_updated TEXT);"
   fi
 }
 
@@ -184,6 +204,9 @@ log_and_tee "📦 Phase 1: Dependency Audit"
 
 log_and_tee "🤝 Phase 2: Deep Forensic Handshake"
 detect_interface
+# If recovery is successful, we should save the interface as BKW.
+# For now, we'll assume if we reached this point and the interface exists, it's a good candidate.
+save_bkw "bkw_interface" "$INTERFACE"
 # [Logic for Broadcom recovery...]
 
 # POINT 15: Flag Creation.

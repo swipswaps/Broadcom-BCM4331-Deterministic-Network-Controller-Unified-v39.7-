@@ -63,19 +63,27 @@ const execAsync = (cmd: string, timeout = 30000) => {
 const rapidRepair = async () => {
   logTee("🔍 Starting rapid system health check...");
   try {
+    const localSetupPath = path.join(WORKSPACE_DIR, "setup-system.sh");
+    const localFixPath = path.join(WORKSPACE_DIR, "fix-wifi.sh");
+
+    // Ensure scripts are executable
+    await execAsync(`chmod +x "${localFixPath}" "${localSetupPath}"`);
+
     if (!fs.existsSync("/usr/local/bin/fix-wifi")) {
-      logTee("⚠️  Fix script missing from system path. Attempting restoration...");
-      await execAsync(`sudo cp fix-wifi.sh /usr/local/bin/fix-wifi && sudo chmod +x /usr/local/bin/fix-wifi`);
-      logTee("✅ Fix script restored to /usr/local/bin/fix-wifi");
+      logTee("⚠️  Fix script missing from system path. Attempting restoration via setup-system.sh...");
+      // Use bash explicitly and absolute path to avoid permission/location issues
+      await execAsync(`PROJECT_ROOT="${WORKSPACE_DIR}" bash "${localSetupPath}"`);
+      logTee("✅ System setup recovery completed via rapidRepair.");
+    } else {
+      logTee("Executing health check: fix-wifi --check-only");
+      await execAsync(`sudo -n PROJECT_ROOT="${WORKSPACE_DIR}" "${FIX_SCRIPT}" --check-only --workspace "${WORKSPACE_DIR}"`);
+      logTee("✅ System health verified. Sudoers and dependencies are intact.");
     }
-    
-    logTee("Executing health check: fix-wifi --check-only");
-    await execAsync(`sudo -n PROJECT_ROOT="${WORKSPACE_DIR}" "${FIX_SCRIPT}" --check-only --workspace "${WORKSPACE_DIR}"`);
-    logTee("✅ System health verified. Sudoers and dependencies are intact.");
   } catch (err) {
     logTee(`❌ Rapid repair failed: ${err}. Triggering full setup recovery...`);
     try {
-      await execAsync(`PROJECT_ROOT=${WORKSPACE_DIR} ./setup-system.sh`);
+      const localSetupPath = path.join(WORKSPACE_DIR, "setup-system.sh");
+      await execAsync(`PROJECT_ROOT="${WORKSPACE_DIR}" bash "${localSetupPath}"`);
       logTee("✅ Full setup recovery completed.");
     } catch (setupErr) {
       logTee(`🚨 CRITICAL: System recovery failed. Manual intervention required: ${setupErr}`);
@@ -88,34 +96,55 @@ app.get("/api/status", async (req, res) => {
   let signal = 0;
   let traffic = { rx: 0, tx: 0 };
   let connectivity = false;
+  let bkwInterface = "Unknown";
 
   try {
-    const iwOutput = execSync("iw dev | grep Interface | awk '{print $2}' | xargs -I {} iw dev {} link").toString();
+    // Retrieve BKW interface from database
+    try {
+      if (fs.existsSync(DB_FILE)) {
+        bkwInterface = execSync(`sqlite3 "${DB_FILE}" "SELECT value FROM config WHERE key='bkw_interface';"`, { timeout: 1000, encoding: 'utf8' }).trim() || "Unknown";
+      }
+    } catch (dbErr) {
+      console.warn(`Failed to retrieve BKW interface from DB: ${dbErr}`);
+    }
+
+    // Use timeouts to prevent hanging the server if system commands stall
+    const iwOutput = execSync("iw dev | grep Interface | awk '{print $2}' | xargs -I {} iw dev {} link", { timeout: 2000, encoding: 'utf8' }).toString();
     const signalMatch = iwOutput.match(/signal:\s+(-?\d+)\s+dBm/);
     if (signalMatch) signal = parseInt(signalMatch[1]);
 
-    const statsOutput = execSync("cat /proc/net/dev | grep -E 'wl|wlan'").toString();
-    const stats = statsOutput.trim().split(/\s+/);
-    if (stats.length > 10) {
-      traffic = { rx: parseInt(stats[1]), tx: parseInt(stats[9]) };
+    // Handle grep failure gracefully (it returns exit code 1 if no matches found)
+    const statsOutput = execSync("cat /proc/net/dev | grep -E 'wl|wlan' || true", { timeout: 1000, encoding: 'utf8' }).toString();
+    if (statsOutput.trim()) {
+      const stats = statsOutput.trim().split(/\s+/);
+      if (stats.length > 10) {
+        traffic = { rx: parseInt(stats[1]), tx: parseInt(stats[9]) };
+      }
     }
 
-    execSync("ping -c 1 -W 1 8.8.8.8");
-    connectivity = true;
-  } catch {
-    // Connectivity failure is a valid state
+    try {
+      execSync("ping -c 1 -W 1 8.8.8.8", { timeout: 1500 });
+      connectivity = true;
+    } catch {
+      connectivity = false;
+    }
+  } catch (e) {
+    // Log but don't crash; partial data is better than an error page
+    console.warn(`Status fetch partial failure: ${e}`);
   }
 
   const timestamp = new Date().toLocaleTimeString();
   metricsHistory.push({ timestamp, signal, ...traffic });
   if (metricsHistory.length > 50) metricsHistory.shift();
 
+  res.setHeader('Content-Type', 'application/json');
   res.json({
     isFixing,
     lastFixError,
     signal,
     traffic,
     connectivity,
+    bkwInterface,
     metricsHistory,
     timestamp: new Date().toISOString()
   });

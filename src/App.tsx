@@ -30,6 +30,7 @@ interface StatusData {
   signal: number;
   traffic: { rx: number; tx: number };
   connectivity: boolean;
+  bkwInterface: string;
   metricsHistory: { timestamp: string; signal: number; rx: number; tx: number }[];
   timestamp: string;
 }
@@ -52,12 +53,20 @@ export default function App() {
   const fetchStatus = async () => {
     try {
       const res = await fetch('/api/status');
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (!res.ok) {
+        const text = await res.text();
+        throw new Error(`HTTP ${res.status}: ${text.slice(0, 50)}`);
+      }
+      const contentType = res.headers.get("content-type");
+      if (!contentType || !contentType.includes("application/json")) {
+        const text = await res.text();
+        throw new Error(`Invalid content-type: ${contentType}. Body: ${text.slice(0, 50)}`);
+      }
       const data = await res.json();
       setStatus(data);
       setError(null);
     } catch (e) {
-      setError("Backend Offline - Run 'npm run dev' to start controller");
+      setError(e instanceof Error ? e.message : "Backend Offline");
       console.error("Failed to fetch status", e);
     }
   };
@@ -92,9 +101,14 @@ export default function App() {
     
     const eventSource = new EventSource('/api/events');
     eventSource.onmessage = (event) => {
-      const data = JSON.parse(event.data) as { type: string; content: string };
-      if (data.type === 'log') {
-        setAudit(prev => prev ? { ...prev, verbatimLogSnippet: data.content } : null);
+      try {
+        if (!event.data) return;
+        const data = JSON.parse(event.data) as { type: string; content: string };
+        if (data.type === 'log') {
+          setAudit(prev => prev ? { ...prev, verbatimLogSnippet: data.content } : null);
+        }
+      } catch (e) {
+        console.error("SSE JSON parse error:", e, "Data:", event.data);
       }
     };
 
@@ -241,6 +255,24 @@ export default function App() {
                         <Line type="monotone" dataKey="tx" stroke="#f59e0b" strokeWidth={2} dot={false} />
                       </LineChart>
                     </ResponsiveContainer>
+                  </div>
+                </div>
+
+                <div className="bg-white/5 border border-white/10 rounded-2xl p-6 relative overflow-hidden group md:col-span-2">
+                  <div className="absolute top-0 right-0 w-32 h-32 bg-amber-500/5 blur-3xl -mr-16 -mt-16 transition-all group-hover:bg-amber-500/10" />
+                  <div className="flex items-center justify-between mb-4">
+                    <span className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Best Known Working Configuration</span>
+                    <Database className="w-4 h-4 text-amber-500" />
+                  </div>
+                  <div className="flex items-center gap-4">
+                    <div className="flex-1 p-3 rounded-xl bg-black/40 border border-white/5">
+                      <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Interface</p>
+                      <p className="text-lg font-bold text-amber-400 font-mono">{status?.bkwInterface || 'Unknown'}</p>
+                    </div>
+                    <div className="flex-1 p-3 rounded-xl bg-black/40 border border-white/5">
+                      <p className="text-[10px] text-slate-500 uppercase tracking-wider mb-1">Last Sync</p>
+                      <p className="text-lg font-bold text-slate-300 font-mono">{status?.timestamp?.split('T')[0] || 'N/A'}</p>
+                    </div>
                   </div>
                 </div>
               </div>

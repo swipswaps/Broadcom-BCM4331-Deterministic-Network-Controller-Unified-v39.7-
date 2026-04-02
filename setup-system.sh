@@ -29,8 +29,10 @@ sudo visudo -c -f /etc/sudoers.d/broadcom-control || { log_and_tee "❌ Sudoers 
 log_and_tee "Installing forensic dependencies..."
 sudo dnf install -y sqlite tcpdump mtr traceroute bind-utils NetworkManager iw rfkill python3-pip || true
 
+# Deploying recovery script to system path...
 log_and_tee "Deploying recovery script to system path..."
-sudo cp fix-wifi.sh /usr/local/bin/fix-wifi
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+sudo cp "${SCRIPT_DIR}/fix-wifi.sh" /usr/local/bin/fix-wifi
 sudo chmod +x /usr/local/bin/fix-wifi
 
 log_and_tee "✅ System integration complete – fully hardened"
